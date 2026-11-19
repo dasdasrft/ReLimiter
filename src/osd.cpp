@@ -1981,7 +1981,11 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
 
     // ── Module 5: Latency & Bottleneck (Warm Amber) ──
 #ifdef _WIN64
-    double cpu_lat_us = g_config.osd_show_cpu_latency ? g_cpu_latency_us.load(std::memory_order_relaxed) : 0.0;
+    double cpu_lat_us = 0.0;
+    if (g_config.osd_show_cpu_latency || g_config.osd_show_cpu_work || g_config.osd_show_gpu_render_time) {
+        cpu_lat_us = g_telemetry_cpu_work_us.load(std::memory_order_relaxed);
+        if (cpu_lat_us <= 0.0) cpu_lat_us = g_cpu_latency_us.load(std::memory_order_relaxed);
+    }
     double gpu_lat_us = 0.0;
     if (g_config.osd_show_gpu_render_time) {
         gpu_lat_us = g_telemetry_gpu_work_us.load(std::memory_order_relaxed);
@@ -1989,7 +1993,16 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
         if (gpu_lat_us <= 0.0) gpu_lat_us = g_gpu_timer.GetLatestGpuTimeUs();
         if (gpu_lat_us <= 0.0) gpu_lat_us = g_measured_render_time_us.load(std::memory_order_relaxed);
     }
-    double total_cost_us = g_config.osd_show_total_frame_cost ? g_reflex_total_frame_cost_us.load(std::memory_order_relaxed) : 0.0;
+    double total_cost_us = 0.0;
+    if (g_config.osd_show_total_frame_cost || (g_config.osd_show_gpu_render_time && cpu_lat_us > 0.0)) {
+        total_cost_us = g_reflex_total_frame_cost_us.load(std::memory_order_relaxed);
+        if (total_cost_us <= 0.0 && (gpu_lat_us > 0.0 || cpu_lat_us > 0.0)) {
+            total_cost_us = gpu_lat_us + cpu_lat_us;
+        }
+        if (total_cost_us <= 0.0) {
+            total_cost_us = g_measured_render_time_us.load(std::memory_order_relaxed);
+        }
+    }
 
     bool has_lat = (cpu_lat_us > 0.0) || (gpu_lat_us > 0.0) || (total_cost_us > 0.0) || g_config.osd_show_bottleneck;
 
@@ -2285,8 +2298,9 @@ static void DrawClassicOSD(float scale, double ft_ms) {
     // ═══════════════════════════════════
     // LATENCY (orange)
     // ═══════════════════════════════════
-    if (g_config.osd_show_cpu_latency) {
-        double cpu_us = g_cpu_latency_us.load(std::memory_order_relaxed);
+    if (g_config.osd_show_cpu_latency || g_config.osd_show_cpu_work) {
+        double cpu_us = g_telemetry_cpu_work_us.load(std::memory_order_relaxed);
+        if (cpu_us <= 0.0) cpu_us = g_cpu_latency_us.load(std::memory_order_relaxed);
         if (cpu_us > 0.0) {
             char buf[32];
             snprintf(buf, sizeof(buf), TR("CPU: %.1f ms", "CPU 提交: %.1f ms"), cpu_us / 1000.0);
@@ -2319,6 +2333,12 @@ static void DrawClassicOSD(float scale, double ft_ms) {
 
     if (g_config.osd_show_total_frame_cost) {
         double cost_us = g_reflex_total_frame_cost_us.load(std::memory_order_relaxed);
+        if (cost_us <= 0.0) {
+            double c_us = g_telemetry_cpu_work_us.load(std::memory_order_relaxed);
+            double g_us = g_telemetry_gpu_work_us.load(std::memory_order_relaxed);
+            if (c_us > 0.0 || g_us > 0.0) cost_us = c_us + g_us;
+        }
+        if (cost_us <= 0.0) cost_us = g_measured_render_time_us.load(std::memory_order_relaxed);
         if (cost_us > 0.0) {
             char buf[32];
             snprintf(buf, sizeof(buf), TR("Frame: %.1f ms", "整帧耗时: %.1f ms"), cost_us / 1000.0);
