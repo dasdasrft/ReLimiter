@@ -4,6 +4,8 @@
 #include <Psapi.h>
 #include <powrprof.h>
 #include <dxgi1_4.h>
+#include <pdh.h>
+#include <pdhmsg.h>
 #pragma comment(lib, "PowrProf.lib")
 #pragma comment(lib, "dxgi.lib")
 #include <cstdint>
@@ -11,6 +13,83 @@
 #include <vector>
 #include <atomic>
 #include <thread>
+
+// ══════════════════════════════════════════════════════════════════
+// Windows Performance Data Helper (PDH) CPU Telemetry
+// ══════════════════════════════════════════════════════════════════
+typedef PDH_STATUS (WINAPI *PFN_PdhOpenQueryA)(LPCSTR, DWORD_PTR, PDH_HQUERY*);
+typedef PDH_STATUS (WINAPI *PFN_PdhAddEnglishCounterA)(PDH_HQUERY, LPCSTR, DWORD_PTR, PDH_HCOUNTER*);
+typedef PDH_STATUS (WINAPI *PFN_PdhCollectQueryData)(PDH_HQUERY);
+typedef PDH_STATUS (WINAPI *PFN_PdhGetFormattedCounterValue)(PDH_HCOUNTER, DWORD, LPDWORD, PPDH_FMT_COUNTERVALUE);
+typedef PDH_STATUS (WINAPI *PFN_PdhCloseQuery)(PDH_HQUERY);
+
+static HMODULE s_pdh_mod = nullptr;
+static PFN_PdhOpenQueryA s_PdhOpenQueryA = nullptr;
+static PFN_PdhAddEnglishCounterA s_PdhAddEnglishCounterA = nullptr;
+static PFN_PdhCollectQueryData s_PdhCollectQueryData = nullptr;
+static PFN_PdhGetFormattedCounterValue s_PdhGetFormattedCounterValue = nullptr;
+static PFN_PdhCloseQuery s_PdhCloseQuery = nullptr;
+
+static PDH_HQUERY s_pdh_query = nullptr;
+static PDH_HCOUNTER s_pdh_cpu_power = nullptr;
+static PDH_HCOUNTER s_pdh_cpu_perf_pct = nullptr;
+static PDH_HCOUNTER s_pdh_cpu_freq_base = nullptr;
+static bool s_pdh_initialized = false;
+
+static void InitPDH() {
+    if (s_pdh_initialized) return;
+    s_pdh_initialized = true;
+
+    s_pdh_mod = LoadLibraryW(L"pdh.dll");
+    if (!s_pdh_mod) return;
+
+    s_PdhOpenQueryA = (PFN_PdhOpenQueryA)GetProcAddress(s_pdh_mod, "PdhOpenQueryA");
+    s_PdhAddEnglishCounterA = (PFN_PdhAddEnglishCounterA)GetProcAddress(s_pdh_mod, "PdhAddEnglishCounterA");
+    s_PdhCollectQueryData = (PFN_PdhCollectQueryData)GetProcAddress(s_pdh_mod, "PdhCollectQueryData");
+    s_PdhGetFormattedCounterValue = (PFN_PdhGetFormattedCounterValue)GetProcAddress(s_pdh_mod, "PdhGetFormattedCounterValue");
+    s_PdhCloseQuery = (PFN_PdhCloseQuery)GetProcAddress(s_pdh_mod, "PdhCloseQuery");
+
+    if (!s_PdhOpenQueryA || !s_PdhAddEnglishCounterA || !s_PdhCollectQueryData ||
+        !s_PdhGetFormattedCounterValue || !s_PdhCloseQuery) {
+        return;
+    }
+
+    if (s_PdhOpenQueryA(nullptr, 0, &s_pdh_query) == ERROR_SUCCESS) {
+        // Try multiple standard Windows RAPL package power counter paths
+        PDH_STATUS st = s_PdhAddEnglishCounterA(s_pdh_query, "\\Energy Meter(RAPL_Package0_PKG)\\Power", 0, &s_pdh_cpu_power);
+        if (st != ERROR_SUCCESS) {
+            st = s_PdhAddEnglishCounterA(s_pdh_query, "\\Energy Meter(RAPL_Package_PKG)\\Power", 0, &s_pdh_cpu_power);
+        }
+        if (st != ERROR_SUCCESS) {
+            st = s_PdhAddEnglishCounterA(s_pdh_query, "\\Energy Meter(RAPL_Package0_PP0)\\Power", 0, &s_pdh_cpu_power);
+        }
+        if (st != ERROR_SUCCESS) {
+            st = s_PdhAddEnglishCounterA(s_pdh_query, "\\Power Meter(0)\\Power", 0, &s_pdh_cpu_power);
+        }
+
+        // Processor performance counters for effective frequency calculation:
+        // effective_mhz = base_frequency * (%_processor_performance / 100.0)
+        s_PdhAddEnglishCounterA(s_pdh_query, "\\Processor Information(_Total)\\% Processor Performance", 0, &s_pdh_cpu_perf_pct);
+        s_PdhAddEnglishCounterA(s_pdh_query, "\\Processor Information(_Total)\\Processor Frequency", 0, &s_pdh_cpu_freq_base);
+
+        s_PdhCollectQueryData(s_pdh_query);
+    }
+}
+
+static void ShutdownPDH() {
+    if (s_pdh_query && s_PdhCloseQuery) {
+        s_PdhCloseQuery(s_pdh_query);
+        s_pdh_query = nullptr;
+    }
+    s_pdh_cpu_power = nullptr;
+    s_pdh_cpu_perf_pct = nullptr;
+    s_pdh_cpu_freq_base = nullptr;
+    if (s_pdh_mod) {
+        FreeLibrary(s_pdh_mod);
+        s_pdh_mod = nullptr;
+    }
+    s_pdh_initialized = false;
+}
 
 // ══════════════════════════════════════════════════════════════════
 // AMD Display Library (ADL / ADL2) Telemetry
@@ -210,6 +289,12 @@ static void PollGPU(HWMonitorData& d) {
                     // Power: Sensor 73 (Total Board Power in Watts)
                     if (out.sensors[73].supported && out.sensors[73].value > 0)
                         d.gpu_power_w = out.sensors[73].value;
+
+                    // AMD SmartShift APU / CPU power in Watts: Sensor 66 (SS APU Power), Sensor 75 (CPU Power)
+                    if (out.sensors[66].supported && out.sensors[66].value > 0)
+                        d.cpu_power_w = out.sensors[66].value;
+                    else if (out.sensors[75].supported && out.sensors[75].value > 0)
+                        d.cpu_power_w = out.sensors[75].value;
                 }
             }
 
@@ -271,7 +356,46 @@ static void PollCPU(HWMonitorData& d) {
         s_cpu_first_sample = false;
     }
 
-    {
+    // 1. Query Windows PDH for CPU power and real-time effective turbo frequency
+    if (!s_pdh_initialized) {
+        InitPDH();
+    }
+    if (s_pdh_query && s_PdhCollectQueryData) {
+        PDH_STATUS status = s_PdhCollectQueryData(s_pdh_query);
+        if (status == ERROR_SUCCESS) {
+            // CPU Power
+            if (s_pdh_cpu_power && s_PdhGetFormattedCounterValue) {
+                PDH_FMT_COUNTERVALUE val = {};
+                if (s_PdhGetFormattedCounterValue(s_pdh_cpu_power, PDH_FMT_DOUBLE, nullptr, &val) == ERROR_SUCCESS &&
+                    (val.CStatus == PDH_CSTATUS_VALID_DATA || val.CStatus == PDH_CSTATUS_NEW_DATA)) {
+                    if (val.doubleValue > 0.0) {
+                        double watts = (val.doubleValue > 1000.0) ? (val.doubleValue / 1000.0) : val.doubleValue;
+                        if (watts > 0.0 && watts < 1000.0) {
+                            d.cpu_power_w = static_cast<int>(watts + 0.5);
+                        }
+                    }
+                }
+            }
+
+            // CPU Effective Frequency
+            if (s_pdh_cpu_perf_pct && s_pdh_cpu_freq_base && s_PdhGetFormattedCounterValue) {
+                PDH_FMT_COUNTERVALUE val_pct = {}, val_base = {};
+                if (s_PdhGetFormattedCounterValue(s_pdh_cpu_perf_pct, PDH_FMT_DOUBLE, nullptr, &val_pct) == ERROR_SUCCESS &&
+                    s_PdhGetFormattedCounterValue(s_pdh_cpu_freq_base, PDH_FMT_DOUBLE, nullptr, &val_base) == ERROR_SUCCESS) {
+                    if ((val_pct.CStatus == PDH_CSTATUS_VALID_DATA || val_pct.CStatus == PDH_CSTATUS_NEW_DATA) &&
+                        (val_base.CStatus == PDH_CSTATUS_VALID_DATA || val_base.CStatus == PDH_CSTATUS_NEW_DATA)) {
+                        double effective = val_base.doubleValue * (val_pct.doubleValue / 100.0);
+                        if (effective > 100.0 && effective < 15000.0) {
+                            d.cpu_clock_mhz = static_cast<int>(effective + 0.5);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Fallback for CPU Frequency if PDH didn't populate it: CallNtPowerInformation
+    if (d.cpu_clock_mhz <= 0) {
         typedef struct {
             ULONG Number;
             ULONG MaxMhz;
@@ -361,6 +485,8 @@ void HWMonitor_Shutdown() {
     s_running.store(false, std::memory_order_relaxed);
     if (s_poll_thread.joinable())
         s_poll_thread.join();
+
+    ShutdownPDH();
 
     if (s_adl_available && s_adl_context && s_ADL2_Main_Control_Destroy) {
         s_ADL2_Main_Control_Destroy(s_adl_context);

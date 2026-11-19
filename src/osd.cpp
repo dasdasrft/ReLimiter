@@ -575,7 +575,7 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
                     p.show_smoothness = true; p.show_fg = true; p.show_limiter = true;
                     p.show_adaptive_smoothing = true; p.show_gpu_temp = true;
                     p.show_gpu_clock = true; p.show_gpu_usage = true; p.show_gpu_power = true; p.show_vram = true;
-                    p.show_cpu_usage = true; p.show_ram = true;
+                    p.show_cpu_usage = true; p.show_cpu_clock = true; p.show_cpu_power = true; p.show_ram = true;
                     OSDPreset_ApplyTogglesOnly(p);
                 } else {
                     // User preset (idx - 3)
@@ -835,6 +835,12 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         FlowSeparator();
         if (ImGui::Checkbox(TR("CPU Usage##osd_elem", "CPU 占用##osd_elem"), &g_config.osd_show_cpu_usage)) config_dirty = true;
         HelpTip(TR("System-wide CPU utilization percentage.", "系统级整体 CPU 负载使用率百分比。"));
+        FlowSeparator();
+        if (ImGui::Checkbox(TR("CPU Clock##osd_elem", "CPU 频率##osd_elem"), &g_config.osd_show_cpu_clock)) config_dirty = true;
+        HelpTip(TR("Real-time CPU effective operating frequency in MHz.", "处理器实时运行主频 (MHz)。"));
+        FlowSeparator();
+        if (ImGui::Checkbox(TR("CPU Power##osd_elem", "CPU 功耗##osd_elem"), &g_config.osd_show_cpu_power)) config_dirty = true;
+        HelpTip(TR("CPU package power draw in watts (Windows RAPL / AMD ADL).", "处理器封装整颗功耗 (W，基于 Windows RAPL / AMD ADL)。"));
         FlowSeparator();
         if (ImGui::Checkbox(TR("RAM##osd_elem", "系统内存##osd_elem"), &g_config.osd_show_ram)) config_dirty = true;
         HelpTip(TR("System RAM usage (used / total) in GB.", "系统物理内存 (RAM) 占用量与总量 (GB)。"));
@@ -2255,6 +2261,18 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
             if (g_config.osd_show_cpu_usage && hw.cpu_usage_pct >= 0) {
                 char buf[32];
                 snprintf(buf, sizeof(buf), TR("CPU Load: %d%%", "CPU 占用: %d%%"), hw.cpu_usage_pct);
+                OSDTextColored(ColSystem(), buf);
+            }
+
+            if (g_config.osd_show_cpu_clock && hw.cpu_clock_mhz > 0) {
+                char buf[32];
+                snprintf(buf, sizeof(buf), TR("CPU Clock: %d MHz", "CPU 频率: %d MHz"), hw.cpu_clock_mhz);
+                OSDTextColored(ColSystem(), buf);
+            }
+
+            if (g_config.osd_show_cpu_power && hw.cpu_power_w > 0) {
+                char buf[32];
+                snprintf(buf, sizeof(buf), TR("CPU Power: %d W", "CPU 功耗: %d W"), hw.cpu_power_w);
                 OSDTextColored(ColSystem(), buf);
             }
 

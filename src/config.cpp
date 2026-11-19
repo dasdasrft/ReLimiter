@@ -204,6 +204,8 @@ void LoadConfig(HMODULE hModule) {
     g_config.osd_show_gpu_power      = ReadINIBool(S, "osd_show_gpu_power", false, P);
     g_config.osd_show_vram           = ReadINIBool(S, "osd_show_vram", false, P);
     g_config.osd_show_cpu_usage      = ReadINIBool(S, "osd_show_cpu_usage", false, P);
+    g_config.osd_show_cpu_clock      = ReadINIBool(S, "osd_show_cpu_clock", false, P);
+    g_config.osd_show_cpu_power      = ReadINIBool(S, "osd_show_cpu_power", false, P);
     g_config.osd_show_ram            = ReadINIBool(S, "osd_show_ram", false, P);
     g_config.osd_show_api            = ReadINIBool(S, "osd_show_api", false, P);
     g_config.osd_show_resolution     = ReadINIBool(S, "osd_show_resolution", false, P);
@@ -338,6 +340,8 @@ void SaveConfig() {
     WriteINIBool(S, "osd_show_gpu_power", g_config.osd_show_gpu_power, P);
     WriteINIBool(S, "osd_show_vram", g_config.osd_show_vram, P);
     WriteINIBool(S, "osd_show_cpu_usage", g_config.osd_show_cpu_usage, P);
+    WriteINIBool(S, "osd_show_cpu_clock", g_config.osd_show_cpu_clock, P);
+    WriteINIBool(S, "osd_show_cpu_power", g_config.osd_show_cpu_power, P);
     WriteINIBool(S, "osd_show_ram", g_config.osd_show_ram, P);
     WriteINIBool(S, "osd_show_api", g_config.osd_show_api, P);
     WriteINIBool(S, "osd_show_resolution", g_config.osd_show_resolution, P);
@@ -485,6 +489,8 @@ OSDPreset OSDPreset_FromConfig() {
     p.show_gpu_power        = g_config.osd_show_gpu_power;
     p.show_vram             = g_config.osd_show_vram;
     p.show_cpu_usage        = g_config.osd_show_cpu_usage;
+    p.show_cpu_clock        = g_config.osd_show_cpu_clock;
+    p.show_cpu_power        = g_config.osd_show_cpu_power;
     p.show_ram              = g_config.osd_show_ram;
     p.show_api              = g_config.osd_show_api;
     p.show_resolution       = g_config.osd_show_resolution;
@@ -524,6 +530,8 @@ void OSDPreset_ApplyToConfig(const OSDPreset& p) {
     g_config.osd_show_gpu_power        = p.show_gpu_power;
     g_config.osd_show_vram             = p.show_vram;
     g_config.osd_show_cpu_usage        = p.show_cpu_usage;
+    g_config.osd_show_cpu_clock        = p.show_cpu_clock;
+    g_config.osd_show_cpu_power        = p.show_cpu_power;
     g_config.osd_show_ram              = p.show_ram;
     g_config.osd_show_api              = p.show_api;
     g_config.osd_show_resolution       = p.show_resolution;
@@ -557,6 +565,8 @@ void OSDPreset_ApplyTogglesOnly(const OSDPreset& p) {
     g_config.osd_show_gpu_power        = p.show_gpu_power;
     g_config.osd_show_vram             = p.show_vram;
     g_config.osd_show_cpu_usage        = p.show_cpu_usage;
+    g_config.osd_show_cpu_clock        = p.show_cpu_clock;
+    g_config.osd_show_cpu_power        = p.show_cpu_power;
     g_config.osd_show_ram              = p.show_ram;
     g_config.osd_show_api              = p.show_api;
     g_config.osd_show_resolution       = p.show_resolution;
@@ -627,6 +637,8 @@ static void ReadPresetFromINI(int i, const char* P) {
     p.show_gpu_power        = ReadINIBool(S, "show_gpu_power", false, P);
     p.show_vram             = ReadINIBool(S, "show_vram", false, P);
     p.show_cpu_usage        = ReadINIBool(S, "show_cpu_usage", false, P);
+    p.show_cpu_clock        = ReadINIBool(S, "show_cpu_clock", false, P);
+    p.show_cpu_power        = ReadINIBool(S, "show_cpu_power", false, P);
     p.show_ram              = ReadINIBool(S, "show_ram", false, P);
     p.show_api              = ReadINIBool(S, "show_api", false, P);
     p.show_resolution       = ReadINIBool(S, "show_resolution", false, P);
@@ -673,6 +685,8 @@ static void ReadDefaultPresetFromINI(const char* P) {
     s_default_preset.show_gpu_power     = ReadINIBool(S, "show_gpu_power", false, P);
     s_default_preset.show_vram          = ReadINIBool(S, "show_vram", false, P);
     s_default_preset.show_cpu_usage     = ReadINIBool(S, "show_cpu_usage", false, P);
+    s_default_preset.show_cpu_clock     = ReadINIBool(S, "show_cpu_clock", false, P);
+    s_default_preset.show_cpu_power     = ReadINIBool(S, "show_cpu_power", false, P);
     s_default_preset.show_ram           = ReadINIBool(S, "show_ram", false, P);
     s_default_preset.show_api           = ReadINIBool(S, "show_api", false, P);
     s_default_preset.show_resolution    = ReadINIBool(S, "show_resolution", false, P);
@@ -763,6 +777,8 @@ void OSDPreset_SaveSlot(int slot) {
     WriteINIBool(S, "show_gpu_power", p.show_gpu_power, P);
     WriteINIBool(S, "show_vram", p.show_vram, P);
     WriteINIBool(S, "show_cpu_usage", p.show_cpu_usage, P);
+    WriteINIBool(S, "show_cpu_clock", p.show_cpu_clock, P);
+    WriteINIBool(S, "show_cpu_power", p.show_cpu_power, P);
     WriteINIBool(S, "show_ram", p.show_ram, P);
     WriteINIBool(S, "show_api", p.show_api, P);
     WriteINIBool(S, "show_resolution", p.show_resolution, P);
@@ -850,6 +866,8 @@ void OSDPreset_SaveDefault(const OSDPreset& p) {
     WriteINIBool(S, "show_gpu_power", p.show_gpu_power, P);
     WriteINIBool(S, "show_vram", p.show_vram, P);
     WriteINIBool(S, "show_cpu_usage", p.show_cpu_usage, P);
+    WriteINIBool(S, "show_cpu_clock", p.show_cpu_clock, P);
+    WriteINIBool(S, "show_cpu_power", p.show_cpu_power, P);
     WriteINIBool(S, "show_ram", p.show_ram, P);
     WriteINIBool(S, "show_api", p.show_api, P);
     WriteINIBool(S, "show_resolution", p.show_resolution, P);

@@ -102,6 +102,8 @@ struct Config {
     bool osd_show_gpu_power = false;
     bool osd_show_vram = false;
     bool osd_show_cpu_usage = false;
+    bool osd_show_cpu_clock = false;
+    bool osd_show_cpu_power = false;
     bool osd_show_ram = false;
 
     // OSD: Display & API
@@ -177,6 +179,8 @@ struct OSDPreset {
     bool show_gpu_power = false;
     bool show_vram = false;
     bool show_cpu_usage = false;
+    bool show_cpu_clock = false;
+    bool show_cpu_power = false;
     bool show_ram = false;
     bool show_api = false;
     bool show_resolution = false;

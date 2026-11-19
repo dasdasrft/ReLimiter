@@ -24,6 +24,7 @@ struct HWMonitorData {
     // CPU (Win32)
     int   cpu_usage_pct     = -1;   // 0–100% (system-wide)
     int   cpu_clock_mhz     = -1;   // Current effective MHz (approximate)
+    int   cpu_power_w       = -1;   // CPU package power draw in watts
 
     // RAM (Win32)
     int64_t ram_used_mb     = -1;   // MB
