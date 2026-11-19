@@ -28,6 +28,8 @@
 #include "streamline_hooks.h"
 #include "focus_lock.h"
 #include "adaptive_smoothing.h"
+#include "gpu_timer.h"
+#include "bottleneck.h"
 #include "vk_enforce.h"
 #include "blackout.h"
 #include "config.h"
@@ -46,6 +48,9 @@ std::atomic<bool>   g_overload_active_flag{false};
 std::atomic<double> g_actual_frame_time_us{0.0};
 std::atomic<double> g_effective_interval_us{0.0};
 std::atomic<double> g_smoothness_us{0.0};
+std::atomic<BottleneckKind> g_bottleneck_kind{BottleneckKind::Unknown};
+std::atomic<double> g_telemetry_gpu_work_us{0.0};
+std::atomic<double> g_telemetry_cpu_work_us{0.0};
 Tier g_current_tier = Tier0;
 std::atomic<int64_t> g_next_deadline{0};
 std::atomic<bool>    g_skip_present_gate{false};
@@ -460,6 +465,7 @@ static void OnMarker_VRR(uint64_t frameID, int64_t now) {
     // overload) is calibrated for the old interval and must be flushed.
     static int s_last_fg_divisor_raw = 0;
     static int s_last_target_fps = -1;
+    static double s_prev_comp_us = 0.0;
     int fg_divisor_raw = ComputeFGDivisorRaw();
     int target_fps = g_user_target_fps.load(std::memory_order_relaxed);
 
@@ -487,6 +493,7 @@ static void OnMarker_VRR(uint64_t frameID, int64_t now) {
         s_ema_present_latency_us = 0.0;
         s_prev_frame_deviation_us = 0.0;
         s_last_own_sleep_us = 0.0;
+        s_prev_comp_us = 0.0;
         g_overload_active_flag.store(false, std::memory_order_relaxed);
     }
     s_last_fg_divisor_raw = fg_divisor_raw;
@@ -552,32 +559,66 @@ static void OnMarker_VRR(uint64_t frameID, int64_t now) {
     // Publish for presentation gate safety clamp
     g_effective_interval_us.store(effective_interval, std::memory_order_relaxed);
 
+    // ── Observed non-sleep computation (CPU work excluding limiter sleep and gate hold) ──
+    double actual_ft = g_actual_frame_time_us.load(std::memory_order_relaxed);
+    double last_own_sleep = s_last_own_sleep_us;
+    double last_gate = g_last_gate_sleep_us.load(std::memory_order_relaxed);
+    double observed_non_sleep;
+    if (last_own_sleep > 100.0 && actual_ft > last_own_sleep) {
+        observed_non_sleep = actual_ft - last_own_sleep - last_gate;
+    } else if (actual_ft > 0.0 && actual_ft < effective_interval * 2.0) {
+        observed_non_sleep = actual_ft - last_gate;
+    } else {
+        observed_non_sleep = predicted;
+    }
+
+    if (observed_non_sleep < 100.0)
+        observed_non_sleep = (std::min)(predicted, effective_interval);
+    observed_non_sleep = (std::min)(observed_non_sleep, effective_interval);
+
+    // ── Dual-Bottleneck Uncoupled Signal Integration ──
+    // 1. Pure GPU channel: hardware execution time via Reflex or GpuTimer timestamp query
+    double t_gpu = g_reflex_gpu_active_us.load(std::memory_order_relaxed);
+    if (t_gpu <= 0.0) {
+        t_gpu = g_gpu_timer.GetLatestGpuTimeUs();
+    }
+    if (t_gpu <= 0.0) {
+        t_gpu = g_measured_render_time_us.load(std::memory_order_relaxed);
+    }
+
+    // 2. Pure CPU channel: non-sleep CPU work
+    double t_cpu = (observed_non_sleep > 0.0) ? observed_non_sleep : 0.0;
+
+    // 3. Bottleneck arbitration and telemetry
+    BottleneckKind bottleneck_kind = BottleneckKind::Unknown;
+    if (t_gpu > 0.0 && t_gpu >= t_cpu * 0.95) {
+        bottleneck_kind = BottleneckKind::GpuBound;
+    } else if (t_cpu > 0.0) {
+        bottleneck_kind = BottleneckKind::CpuBound;
+    }
+    g_bottleneck_kind.store(bottleneck_kind, std::memory_order_relaxed);
+    g_telemetry_gpu_work_us.store(t_gpu, std::memory_order_relaxed);
+    g_telemetry_cpu_work_us.store(t_cpu, std::memory_order_relaxed);
+
+    double bottleneck_work = (std::max)(t_gpu, t_cpu);
+
     // ── Adaptive smoothing: P99-based interval extension ──
-    // GPU active render time: the driver-measured shader execution time
-    // excluding idle bubbles between draw calls. On AMD/non-Reflex hardware,
-    // falls back to measured frame render time or latest predictor sample.
+    // Tracks max(T_gpu, T_cpu) to guarantee pacing whether GPU-bound or CPU-bound.
+    // Completely uncoupled from limiter sleep to avoid self-coupling deadlocks.
     double smoothing_offset = 0.0;
-    if (g_config.adaptive_smoothing &&
-        predictor_warm) {
-        double gpu_active = g_reflex_gpu_active_us.load(std::memory_order_relaxed);
-        if (gpu_active <= 0.0) {
-            gpu_active = g_measured_render_time_us.load(std::memory_order_relaxed);
-        }
-        if (gpu_active <= 0.0 && g_predictor.frame_times_us.Size() > 0) {
-            gpu_active = g_predictor.frame_times_us.Latest();
-        }
-
-        // Keep last known plausible value — Feedback only updates periodically.
-        // For non-Reflex/AMD fallback, allow any reasonable render time (>1ms).
-        static double s_last_gpu_active = 0.0;
+    if (g_config.adaptive_smoothing && predictor_warm) {
+        static double s_last_bottleneck_work = 0.0;
         double min_plausible = (std::min)(effective_interval * 0.5, 1000.0);
-        if (gpu_active >= min_plausible)
-            s_last_gpu_active = gpu_active;
-        else if (s_last_gpu_active > 0.0)
-            gpu_active = s_last_gpu_active;
+        if (bottleneck_work >= min_plausible)
+            s_last_bottleneck_work = bottleneck_work;
+        else if (s_last_bottleneck_work > 0.0)
+            bottleneck_work = s_last_bottleneck_work;
 
-        if (gpu_active >= min_plausible && gpu_active < effective_interval * 3.0)
-            smoothing_offset = g_adaptive_smoothing.Update(gpu_active, effective_interval);
+        if (bottleneck_work >= min_plausible && bottleneck_work < effective_interval * 3.0)
+            smoothing_offset = g_adaptive_smoothing.Update(bottleneck_work, effective_interval, bottleneck_kind);
+        else
+            smoothing_offset = g_adaptive_smoothing.GetOffset();
+
         // Add user-configured constant bias on top of the computed offset
         smoothing_offset += g_config.smoothing_bias_us;
         // Re-publish total offset (computed + bias) for OSD
@@ -610,6 +651,7 @@ static void OnMarker_VRR(uint64_t frameID, int64_t now) {
     // converges on the new distribution without a full state flush.
     if (g_regime_break.exchange(false, std::memory_order_relaxed)) {
         g_adaptive_smoothing.SoftReset();
+        s_prev_comp_us = 0.0;
     }
 
     // ── Deadline miss tracking ──
@@ -698,118 +740,43 @@ static void OnMarker_VRR(uint64_t frameID, int64_t now) {
             raw_wake = this_frame_deadline - us_to_qpc(150.0);
         } else {
             // frame_cost: how long from wake until the present call.
-            //
-            // Use the larger of predicted render time and an EMA of observed
-            // non-sleep time. The predictor measures enforcement → PRESENT_START
-            // but the game may have its own internal limiter that adds time
-            // the predictor doesn't see. The EMA catches this.
-            //
-            // When the gate is active, subtract gate hold from observed
-            // non-sleep so the gate's phase-stabilization time doesn't
-            // inflate frame_cost (which would erode gate margin).
-            //
-            // When GPU-bound (no sleep), fall back to predicted.
-            // will_gate already computed above for deadline mode selection.
-
-            double actual_ft = g_actual_frame_time_us.load(std::memory_order_relaxed);
-            double last_own_sleep = s_last_own_sleep_us;
-            double last_gate = g_last_gate_sleep_us.load(std::memory_order_relaxed);
-            double observed_non_sleep;
-            if (last_own_sleep > 100.0 && actual_ft > last_own_sleep) {
-                // Normal path: subtract our sleep and gate hold to isolate
-                // the game's CPU cost (render + submit + any internal limiter).
-                observed_non_sleep = actual_ft - last_own_sleep - last_gate;
-            } else if (actual_ft > 0.0 && actual_ft < effective_interval * 2.0) {
-                // Zero-sleep path: when own_sleep is negligible, actual_ft
-                // IS the non-sleep time (game render + gate hold). Subtract
-                // gate hold to get game CPU cost, same as the normal path.
-                //
-                // The old code fell back to `predicted` here, which creates
-                // a death spiral at high FPS: predicted seeds the EMA →
-                // inflated frame_cost → zero sleep → fallback to predicted →
-                // EMA never recovers. Using actual_ft - gate breaks the
-                // cycle by giving the EMA real measurements to converge on.
-                observed_non_sleep = actual_ft - last_gate;
-            } else {
-                // Stall or no data: fall back to predicted as last resort.
-                observed_non_sleep = predicted;
-            }
-
-            // Sanity floor: reject nonsensically low or negative values.
-            // Can happen when gate hold exceeds actual_ft (measurement
-            // timing skew) or during scene transitions.
-            if (observed_non_sleep < 100.0)
-                observed_non_sleep = (std::min)(predicted, effective_interval);
-
-            // Clamp to effective interval — a single stall frame (scene
-            // transition, shader compile) shouldn't push the EMA to 200ms+
-            // which would take hundreds of frames to recover from.
-            observed_non_sleep = (std::min)(observed_non_sleep, effective_interval);
+            // Uses the non-sleep EMA (observed_non_sleep computed above).
 
             // Seed EMA from the first observed sample rather than predicted.
-            // Seeding from predicted locks in stale values after FPS changes
-            // (e.g., predicted=9ms at 157fps target=6.4ms), and the EMA
-            // can't recover when the zero-sleep fallback also feeds predicted.
             if (s_ema_non_sleep_us == 0.0)
                 s_ema_non_sleep_us = observed_non_sleep;
             else {
-                // Symmetric alpha: track increases and decreases at the same
-                // rate. The original asymmetric alpha (0.15 up / 0.35 down)
-                // was designed to reduce overshoot clustering (session 27),
-                // but sessions 33-35 revealed it destroys gate headroom.
-                //
-                // The fast down-alpha (0.35) makes the EMA track game_cpu
-                // decreases in ~3 frames, so frame_cost ≈ game_cpu with
-                // ~0µs headroom. The gate only fires when frames arrive
-                // BEFORE the deadline, which requires frame_cost > game_cpu.
-                // With 0.35 down-alpha, headroom is -44µs (S35 analysis),
-                // yielding only 10% gating and PI_sd=1544.
-                //
-                // Symmetric 0.15 produces headroom of +104µs on low-variance
-                // scenes (S35) and +309µs on high-variance scenes (S30),
-                // yielding 56-57% gateable frames — matching S30's proven
-                // 57% gating and PI_sd=687.
-                //
-                // The overshoot clustering concern (session 27) is mitigated
-                // by the gate itself: gated frames have their present time
-                // locked to the deadline, so enforcement-level ++ clustering
-                // doesn't propagate to the display.
                 static constexpr double NS_EMA_ALPHA = 0.15;
                 s_ema_non_sleep_us += NS_EMA_ALPHA * (observed_non_sleep - s_ema_non_sleep_us);
             }
 
-            // frame_cost: use the non-sleep EMA directly.
-            //
-            // The EMA tracks game_cpu with ~0µs headroom. This means the
-            // gate only catches frames where game_cpu < ema (about 50%).
-            // Attempts to add headroom all destabilized the feedback loop:
-            // - S33 max(pred,ema): pred < ema in FG, reduced headroom
-            // - S38 ema+1000: caused overshoot clustering (lag1→+0.50)
-            //   because gate hold inflated, changing the EMA input
-            //
-            // The remaining PI variance (~1400-1500µs stdev) comes from
-            // the deadline chain oscillation propagating through the GPU
-            // pipeline. This is structural — the coupled feedback between
-            // frame_cost, sleep, gate_hold, and the EMA absorbs or
-            // amplifies any constant added to frame_cost within ~7 frames.
             double frame_cost = s_ema_non_sleep_us;
 
-            // Wake formula: deadline - frame_cost - wake_guard - gate_margin
-            //
-            // Unified formula: always include the gate margin. The gate
-            // self-disables for late frames (timestamp >= gate_target →
-            // passthrough), so the margin is only "used" when the frame
-            // arrives early enough to be gated. When GPU-bound, frame_cost
-            // ≈ effective_interval, so raw_wake ≈ now and there's no sleep
-            // regardless — the margin doesn't cause extra latency.
-            //
             // Gate margin: fixed at 1500µs.
             static constexpr double GATE_MARGIN_US = 1500.0;
             telemetry_gate_margin = GATE_MARGIN_US;
 
+            // ── BBR Queue Draining Delay Compensation ──
+            // If the GPU accumulated queue backlog (>1000us deadline error while GPU bound),
+            // inject a bounded single-frame compensation to drain the driver queue.
+            double delay_comp_us = 0.0;
+            if (!frame_missed && bottleneck_kind == BottleneckKind::GpuBound && s_last_present_deadline > 0) {
+                double deadline_error_us = (now > s_last_present_deadline)
+                    ? qpc_to_us(now - s_last_present_deadline) : 0.0;
+                if (deadline_error_us > 1000.0) {
+                    delay_comp_us = std::clamp(deadline_error_us - s_prev_comp_us, 0.0, effective_interval * 0.25);
+                    s_prev_comp_us = deadline_error_us;
+                } else if (deadline_error_us <= 500.0) {
+                    s_prev_comp_us = 0.0;
+                }
+            } else {
+                s_prev_comp_us = 0.0;
+            }
+
             raw_wake = next_deadline - us_to_qpc(frame_cost)
                      - us_to_qpc(wake_guard)
-                     - us_to_qpc(GATE_MARGIN_US);
+                     - us_to_qpc(GATE_MARGIN_US)
+                     - us_to_qpc(delay_comp_us);
         }
         raw_wake = (std::max)(raw_wake, now);
     }

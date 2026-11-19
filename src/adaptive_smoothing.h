@@ -1,49 +1,52 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
+#include "bottleneck.h"
 
 #ifdef _WIN64
 
 #include "rolling_window.h"
 
-// Adaptive smoothing: tracks render time distribution and computes a P99-based
-// offset to extend effective_interval, keeping 99% of frames slightly longer
-// than the framerate limit for optimal cadence consistency.
-//
-// Integration: called from OnMarker_VRR() after LFC guard, before deadline chain.
-// The offset is added to effective_interval so the entire pipeline (deadline,
-// sleep, gate) operates at the smoothed interval.
-//
-// Reset policy: never triggers predictor or scheduler flushes. External resets
-// (FG change, FPS change, refocus) call SoftReset() to retain 25% of samples.
+// Adaptive smoothing: tracks bottleneck execution distribution and computes a P99-based
+// offset to extend effective_interval, keeping frames within budget for optimal cadence consistency.
+// Incorporates asymmetric attack/release, headroom streak fast release, and BBR negative gain headroom.
 
 struct AdaptiveSmoothing {
-    // Primary window (medium mode, default)
-    RollingWindow<double, 256> primary;
+    // Primary window (medium mode, 200 samples)
+    RollingWindow<double, 200> primary;
 
-    // Dual-window mode: short for fast tracking, long for stability
+    // Dual-window mode: short (64 frames) for fast tracking, long (200 frames) for stability
     RollingWindow<double, 64>  short_win;
-    RollingWindow<double, 512> long_win;
+    RollingWindow<double, 200> long_win;
 
     // Output state
     double smoothed_offset_us = 0.0;
     double raw_p99_us = 0.0;
 
-    // EMA parameters
-    double ema_alpha = 0.15;
+    // Asymmetric EMA parameters
+    double alpha_attack  = 0.25;
+    double alpha_release = 0.08;
     int    fast_convergence_frames = 0;
     int    consecutive_outliers = 0;
 
-    // Configuration (set from g_config at init and on config change)
-    bool   dual_mode = false;
+    // Headroom streak tracking
+    uint32_t headroom_streak = 0;
+
+    // Configuration
+    bool   dual_mode = true;
     double target_percentile = 0.99;
     bool   enabled = true;
+    double queue_drain_margin_pct = 0.015; // 1.5% BBR negative-gain headroom
+    bool   enable_fast_release = true;
 
-    // Feed a render time sample and compute the smoothing offset.
-    // render_time_us: predictor's frame time (enforcement → PRESENT_START).
-    // effective_interval_us: current target interval before smoothing.
+    // Feed a bottleneck time sample (work_us) and compute the smoothing offset.
+    // bottleneck_work_us: max(T_gpu, T_cpu) excluding self-sleep.
+    // effective_interval_us: target interval before smoothing.
+    // bottleneck_kind: whether GpuBound, CpuBound, or Unknown.
     // Returns the smoothed offset to add to effective_interval.
-    double Update(double render_time_us, double effective_interval_us);
+    double Update(double bottleneck_work_us, double effective_interval_us,
+                  BottleneckKind bottleneck_kind = BottleneckKind::Unknown);
 
     // Soft reset: retain last 25% of samples, accelerate EMA for 32 frames.
     // Called on regime breaks and external state flushes.
@@ -58,7 +61,8 @@ struct AdaptiveSmoothing {
     bool   IsWarm()    const { return primary.Size() >= 32; }
 
     // Apply config values
-    void SetConfig(bool dual, double percentile, bool enable);
+    void SetConfig(bool dual, double percentile, bool enable,
+                   double drain_margin = 0.015, bool fast_rel = true);
 };
 
 #else // 32-bit stub
@@ -69,14 +73,16 @@ struct AdaptiveSmoothing {
     bool   dual_mode = false;
     double target_percentile = 0.99;
     bool   enabled = false;
+    double queue_drain_margin_pct = 0.015;
+    bool   enable_fast_release = true;
 
-    double Update(double, double) { return 0.0; }
+    double Update(double, double, BottleneckKind = BottleneckKind::Unknown) { return 0.0; }
     void SoftReset() {}
     void Reset() {}
     double GetOffset() const { return 0.0; }
     double GetP99()    const { return 0.0; }
     bool   IsWarm()    const { return false; }
-    void SetConfig(bool, double, bool) {}
+    void SetConfig(bool, double, bool, double = 0.015, bool = true) {}
 };
 
 #endif // _WIN64

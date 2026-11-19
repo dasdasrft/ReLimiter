@@ -47,6 +47,7 @@ set(ADDON_SOURCES
     src/pll.cpp
     src/predictor.cpp
     src/regime_detector.cpp
+    src/gpu_timer.cpp
     src/scheduler.cpp
     src/sleep.cpp
     src/sleep_mode.cpp

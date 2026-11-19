@@ -79,13 +79,17 @@ struct Config {
     int dmfg_output_cap = 0;
 
     // Adaptive Smoothing
-    bool   adaptive_smoothing = false;           // Enable P99-based adaptive smoothing (DX12+Reflex only)
+    bool   adaptive_smoothing = false;           // Enable P99-based adaptive smoothing (DX12/DX11/Vulkan)
     double smoothing_percentile = 0.99;         // Target percentile (0.90–0.999)
-    std::string smoothing_window = "medium";    // "medium" (256 frames) | "dual" (64+512)
+    std::string smoothing_window = "dual";      // "medium" (200 frames) | "dual" (64+200)
     double smoothing_bias_us = 0.0;             // Constant bias added to computed offset (0–1000µs)
+    double queue_drain_margin_pct = 0.015;      // BBR negative-gain headroom (0.0% – 5.0%, default 1.5%)
+    bool   enable_fast_release = true;          // Headroom streak fast release on confirmed idle
 
     // OSD: Adaptive Smoothing
     bool osd_show_adaptive_smoothing = false;
+    bool osd_show_bottleneck = true;
+    bool osd_show_cpu_work = false;
 
     // OSD: Hardware monitoring
     bool osd_show_0_1pct_low = false;

@@ -120,8 +120,9 @@ void ValidateConfig() {
     // ── Adaptive Smoothing ──
     g_config.smoothing_percentile = Clamp(g_config.smoothing_percentile, 0.50, 0.999);
     g_config.smoothing_bias_us = Clamp(g_config.smoothing_bias_us, 0.0, 1000.0);
+    g_config.queue_drain_margin_pct = Clamp(g_config.queue_drain_margin_pct, 0.0, 0.10);
     static const char* smoothing_windows[] = {"medium", "dual"};
-    ValidateEnum(g_config.smoothing_window, smoothing_windows, 2, "medium");
+    ValidateEnum(g_config.smoothing_window, smoothing_windows, 2, "dual");
 
     // ── Monitor Selection ──
     g_config.selected_monitor = Clamp(g_config.selected_monitor, 0, 8);
@@ -186,9 +187,13 @@ void LoadConfig(HMODULE hModule) {
     g_config.dmfg_output_cap         = ReadINIInt(S, "dmfg_output_cap", 0, P);
     g_config.adaptive_smoothing      = ReadINIBool(S, "adaptive_smoothing", false, P);
     g_config.smoothing_percentile    = ReadINIDouble(S, "smoothing_percentile", 0.99, P);
-    g_config.smoothing_window        = ReadINIString(S, "smoothing_window", "medium", P);
+    g_config.smoothing_window        = ReadINIString(S, "smoothing_window", "dual", P);
     g_config.smoothing_bias_us       = ReadINIDouble(S, "smoothing_bias_us", 0.0, P);
+    g_config.queue_drain_margin_pct  = ReadINIDouble(S, "queue_drain_margin_pct", 0.015, P);
+    g_config.enable_fast_release     = ReadINIBool(S, "enable_fast_release", true, P);
     g_config.osd_show_adaptive_smoothing = ReadINIBool(S, "osd_show_adaptive_smoothing", false, P);
+    g_config.osd_show_bottleneck     = ReadINIBool(S, "osd_show_bottleneck", true, P);
+    g_config.osd_show_cpu_work       = ReadINIBool(S, "osd_show_cpu_work", false, P);
     g_config.osd_show_0_1pct_low     = ReadINIBool(S, "osd_show_0_1pct_low", false, P);
     g_config.osd_show_gpu_render_time = ReadINIBool(S, "osd_show_gpu_render_time", false, P);
     g_config.osd_show_total_frame_cost = ReadINIBool(S, "osd_show_total_frame_cost", false, P);
@@ -365,6 +370,10 @@ void SaveConfig() {
     WriteINIDouble(S, "smoothing_percentile", g_config.smoothing_percentile, P);
     WriteINIString(S, "smoothing_window", g_config.smoothing_window.c_str(), P);
     WriteINIDouble(S, "smoothing_bias_us", g_config.smoothing_bias_us, P);
+    WriteINIDouble(S, "queue_drain_margin_pct", g_config.queue_drain_margin_pct, P);
+    WriteINIBool(S, "enable_fast_release", g_config.enable_fast_release, P);
+    WriteINIBool(S, "osd_show_bottleneck", g_config.osd_show_bottleneck, P);
+    WriteINIBool(S, "osd_show_cpu_work", g_config.osd_show_cpu_work, P);
 
     // ── Frame Generation ──
     WriteINIBool(S, "dynamic_mfg_passthrough", g_config.dynamic_mfg_passthrough, P);
@@ -401,7 +410,9 @@ void ApplyConfig() {
     g_adaptive_smoothing.SetConfig(
         g_config.smoothing_window == "dual",
         g_config.smoothing_percentile,
-        g_config.adaptive_smoothing);
+        g_config.adaptive_smoothing,
+        g_config.queue_drain_margin_pct,
+        g_config.enable_fast_release);
 }
 
 

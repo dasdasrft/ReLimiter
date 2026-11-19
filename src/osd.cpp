@@ -19,6 +19,8 @@
 #include "presentation_gate.h"
 #include "flip_model.h"
 #include "adaptive_smoothing.h"
+#include "gpu_timer.h"
+#include "bottleneck.h"
 #include "vk_enforce.h"
 #include "hw_monitor.h"
 #include "feedback.h"
@@ -1145,9 +1147,16 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
                    "基于 P99 渲染耗时的自适应间隔动态补偿。动态扩展目标帧间隔，确保 99% 的帧在预算内完成，有效消除显卡渲染耗时波动引起的微卡顿。支持 AMD、Intel 与 NVIDIA 显卡。"));
 
         if (g_config.adaptive_smoothing) {
-            if (ImGui::Checkbox(TR("Show on OSD##adaptive", "在 OSD 上显示##adaptive"), &g_config.osd_show_adaptive_smoothing))
+            if (ImGui::Checkbox(TR("Show on OSD##adaptive", "在 OSD 上显示自适应平滑##adaptive"), &g_config.osd_show_adaptive_smoothing))
                 config_dirty = true;
-            HelpTip(TR("Show adaptive smoothing offset and P99 render time on the in-game overlay.", "在游戏内 OSD 监控面板上显示自适应平滑偏置及 P99 渲染耗时。"));
+            ImGui::SameLine();
+            if (ImGui::Checkbox(TR("Show Bottleneck##adaptive", "在 OSD 显示瓶颈##adaptive"), &g_config.osd_show_bottleneck))
+                config_dirty = true;
+            ImGui::SameLine();
+            if (ImGui::Checkbox(TR("Show CPU Work##adaptive", "在 OSD 显示 CPU 耗时##adaptive"), &g_config.osd_show_cpu_work))
+                config_dirty = true;
+            HelpTip(TR("Show adaptive smoothing offset, bottleneck state (GPU/CPU), and CPU work on the in-game overlay.",
+                       "在游戏内 OSD 监控面板上显示自适应平滑偏置、硬件瓶颈状态 (显卡/处理器) 及 CPU 真实耗时。"));
 
             // Percentile slider
             float pct = static_cast<float>(g_config.smoothing_percentile * 100.0);
@@ -1158,15 +1167,17 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
                 g_adaptive_smoothing.SetConfig(
                     g_config.smoothing_window == "dual",
                     g_config.smoothing_percentile,
-                    g_config.adaptive_smoothing);
+                    g_config.adaptive_smoothing,
+                    g_config.queue_drain_margin_pct,
+                    g_config.enable_fast_release);
                 config_dirty = true;
             }
             HelpTip(TR("Target percentile for the threshold. P99 = 99% of frames fit within the interval. Lower = more headroom, higher = tighter.",
                        "平滑的目标耗时分位数。P99 代表保证 99% 的帧落在该区间内。较低值容差更大，较高值抗偶发卡顿更严苛。"));
 
             // Window mode combo
-            const char* win_labels_en[] = {"Medium (256)", "Dual (64+512)"};
-            const char* win_labels_zh[] = {"中窗口 Medium (256帧)", "双窗口 Dual (64+512帧)"};
+            const char* win_labels_en[] = {"Medium (200)", "Dual (64+200)"};
+            const char* win_labels_zh[] = {"中窗口 Medium (200帧)", "双窗口 Dual (64+200帧)"};
             const char** win_labels = IsChinese() ? win_labels_zh : win_labels_en;
             int current_win = (g_config.smoothing_window == "dual") ? 1 : 0;
             if (ImGui::BeginCombo(TR("Window##adaptive", "采样窗口模式 (Window)##adaptive"), win_labels[current_win])) {
@@ -1177,14 +1188,46 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
                         g_adaptive_smoothing.SetConfig(
                             i == 1,
                             g_config.smoothing_percentile,
-                            g_config.adaptive_smoothing);
+                            g_config.adaptive_smoothing,
+                            g_config.queue_drain_margin_pct,
+                            g_config.enable_fast_release);
                         config_dirty = true;
                     }
                 }
                 ImGui::EndCombo();
             }
-            HelpTip(TR("Medium: single 256-frame window (~4s). Dual: short 64 + long 512 window, uses max of both P99s for robustness against scene changes.",
-                       "Medium: 单一 256 帧滑动窗口 (约 4 秒)；Dual: 结合短窗口 (64帧) 与长窗口 (512帧) 取最大值，对场景剧烈切换更鲁棒抗卡。"));
+            HelpTip(TR("Medium: single 200-frame window (~3s). Dual: short 64 + long 200 window, uses max of both P99s for robustness against scene changes.",
+                       "Medium: 单一 200 帧滑动窗口 (约 3 秒)；Dual: 结合短窗口 (64帧) 与长窗口 (200帧) 取最大值，对场景剧烈切换更鲁棒抗卡。"));
+
+            // BBR Queue Drain Margin slider
+            float drain_pct = static_cast<float>(g_config.queue_drain_margin_pct * 100.0);
+            if (ImGui::SliderFloat(TR("Queue Drain Margin (%)##adaptive", "BBR 队列排空余量 (%)##adaptive"), &drain_pct, 0.0f, 5.0f, "%.1f %%")) {
+                g_config.queue_drain_margin_pct = static_cast<double>(drain_pct) / 100.0;
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                g_adaptive_smoothing.SetConfig(
+                    g_config.smoothing_window == "dual",
+                    g_config.smoothing_percentile,
+                    g_config.adaptive_smoothing,
+                    g_config.queue_drain_margin_pct,
+                    g_config.enable_fast_release);
+                config_dirty = true;
+            }
+            HelpTip(TR("BBR-inspired negative gain headroom when GPU bound. Targets slightly below GPU saturation to continuously drain driver queues and eliminate bufferbloat latency. Default: 1.5%.",
+                       "借鉴 BBR 拥塞控制思想的负增益排空余量。当显卡满载时主动将目标帧率压在极限吞吐之下约 1.5%，持续排空驱动命令队列，降低输入延迟。"));
+
+            // Fast release checkbox
+            if (ImGui::Checkbox(TR("Fast Release (Headroom Streak)##adaptive", "空闲快速释放 (Headroom Streak)##adaptive"), &g_config.enable_fast_release)) {
+                g_adaptive_smoothing.SetConfig(
+                    g_config.smoothing_window == "dual",
+                    g_config.smoothing_percentile,
+                    g_config.adaptive_smoothing,
+                    g_config.queue_drain_margin_pct,
+                    g_config.enable_fast_release);
+                config_dirty = true;
+            }
+            HelpTip(TR("Detects sustained hardware headroom (>=12% for 60 frames) and accelerates release back to the target FPS cap, preventing lingering low FPS when moving to lighter scenes.",
+                       "余量连续确认快速释放：当检测到持续拥有 >=12% 硬件余量达 60 帧时，主动裁剪历史高值，让帧率在 1-2 秒内平滑回弹至上限，彻底消除低帧率粘滞。"));
 
             // Bias slider
             float bias = static_cast<float>(g_config.smoothing_bias_us);
@@ -1922,12 +1965,24 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
         }
 
         if (g_config.osd_show_gpu_render_time) {
-            double gpu_us = g_reflex_gpu_active_us.load(std::memory_order_relaxed);
-            if (gpu_us <= 0.0)
-                gpu_us = g_measured_render_time_us.load(std::memory_order_relaxed);
+            double gpu_us = g_telemetry_gpu_work_us.load(std::memory_order_relaxed);
+            if (gpu_us <= 0.0) {
+                gpu_us = g_reflex_gpu_active_us.load(std::memory_order_relaxed);
+                if (gpu_us <= 0.0)
+                    gpu_us = g_gpu_timer.GetLatestGpuTimeUs();
+                if (gpu_us <= 0.0)
+                    gpu_us = g_measured_render_time_us.load(std::memory_order_relaxed);
+            }
             if (gpu_us > 0.0) {
-                char buf[32];
-                snprintf(buf, sizeof(buf), TR("GPU: %.1f ms", "GPU 渲染: %.1f ms"), gpu_us / 1000.0);
+                const char* tag = "HW";
+                if (g_reflex_gpu_active_us.load(std::memory_order_relaxed) > 0.0)
+                    tag = "Reflex";
+                else if (g_gpu_timer.IsSupported())
+                    tag = g_gpu_timer.GetSourceTag();
+
+                char buf[64];
+                snprintf(buf, sizeof(buf), TR("GPU (HW): %.1f ms [%s]", "显卡耗时 (HW): %.1f ms [%s]"),
+                         gpu_us / 1000.0, tag);
                 OSDTextColored(ColLatency(), buf);
             }
         }
@@ -2013,6 +2068,33 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
                     : ImVec4(0.9f*b, 0.9f*b, 0.2f*b, 1.0f);
                 OSDTextColored(col, buf);
             }
+        }
+
+        // Bottleneck state (GPU Bound / CPU Bound)
+        if (g_config.osd_show_bottleneck) {
+            BottleneckKind bkind = g_bottleneck_kind.load(std::memory_order_relaxed);
+            const char* bstr = (bkind == BottleneckKind::GpuBound)
+                ? TR("GPU Bound", "显卡受限 (GPU)")
+                : ((bkind == BottleneckKind::CpuBound)
+                    ? TR("CPU Bound", "处理器受限 (CPU)")
+                    : TR("Balanced", "负载平衡"));
+            char buf[64];
+            snprintf(buf, sizeof(buf), TR("Bottleneck: %s", "硬件瓶颈: %s"), bstr);
+            float b = g_config.osd_text_brightness;
+            ImVec4 bcol = (bkind == BottleneckKind::GpuBound)
+                ? ImVec4(0.95f*b, 0.45f*b, 0.2f*b, 1.0f)  // Orange for GPU bound
+                : ((bkind == BottleneckKind::CpuBound)
+                    ? ImVec4(0.3f*b, 0.75f*b, 1.0f*b, 1.0f) // Cyan for CPU bound
+                    : ImVec4(0.7f*b, 0.7f*b, 0.7f*b, 1.0f)); // Grey for Balanced
+            OSDTextColored(bcol, buf);
+        }
+
+        // CPU Work (non-sleep CPU time)
+        if (g_config.osd_show_cpu_work) {
+            double cpu_us = g_telemetry_cpu_work_us.load(std::memory_order_relaxed);
+            char buf[48];
+            snprintf(buf, sizeof(buf), TR("CPU Work: %.1f ms", "CPU 真实耗时: %.1f ms"), cpu_us / 1000.0);
+            OSDTextColored(ColLatency(), buf);
         }
 #endif // _WIN64 (Pipeline section: FG, Limiter, Adaptive Smoothing)
 

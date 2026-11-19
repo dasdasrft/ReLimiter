@@ -7,29 +7,24 @@ AdaptiveSmoothing g_adaptive_smoothing;
 std::atomic<double> g_smoothing_offset_us{0.0};
 std::atomic<double> g_smoothing_p99_us{0.0};
 
-double AdaptiveSmoothing::Update(double render_time_us, double effective_interval_us) {
-    if (!enabled || render_time_us <= 0.0 || effective_interval_us <= 0.0) {
+double AdaptiveSmoothing::Update(double bottleneck_work_us, double effective_interval_us,
+                                 BottleneckKind bottleneck_kind) {
+    if (!enabled || bottleneck_work_us <= 0.0 || effective_interval_us <= 0.0) {
         smoothed_offset_us = 0.0;
         return 0.0;
     }
 
-    // Reject outliers: stalls, scene transitions, shader compiles
-    if (render_time_us > effective_interval_us * 3.0)
+    // Reject outliers: extreme stalls, scene transitions, shader compiles (>3x interval)
+    if (bottleneck_work_us > effective_interval_us * 3.0)
         return smoothed_offset_us;
 
     // Median-based outlier rejection: reject samples beyond 3x the median render time.
-    // The median is robust to existing outliers (unlike the mean). This catches shader
-    // compilation spikes, streaming hitches, and driver stalls that would inflate the
-    // P99 for hundreds of frames. Normal render time variance passes through — that's
-    // the signal adaptive smoothing needs. Only activates after 32 samples.
     if (primary.Size() >= 32) {
         double median = primary.Percentile(0.5);
-        if (render_time_us > median * 3.0) {
+        if (bottleneck_work_us > median * 3.0) {
             consecutive_outliers++;
             if (consecutive_outliers >= 8) {
-                // Sustained workload shift / scene transition (e.g. menu -> heavy gameplay):
-                // 8 consecutive frames > 3x median is not an isolated stutter.
-                // Reset outlier counter and soft-reset to adapt to the new regime.
+                // Sustained workload shift / scene transition:
                 consecutive_outliers = 0;
                 SoftReset();
             } else {
@@ -41,13 +36,13 @@ double AdaptiveSmoothing::Update(double render_time_us, double effective_interva
     }
 
     // Push to windows
-    primary.Push(render_time_us);
+    primary.Push(bottleneck_work_us);
     if (dual_mode) {
-        short_win.Push(render_time_us);
-        long_win.Push(render_time_us);
+        short_win.Push(bottleneck_work_us);
+        long_win.Push(bottleneck_work_us);
     }
 
-    // Warmup guard: need ≥32 samples for meaningful P99
+    // Warmup guard: need >=32 samples for meaningful P99
     if (primary.Size() < 32) {
         smoothed_offset_us = 0.0;
         raw_p99_us = 0.0;
@@ -65,26 +60,51 @@ double AdaptiveSmoothing::Update(double render_time_us, double effective_interva
     }
     raw_p99_us = p99;
 
-    // Raw offset: how much the P99 exceeds the target interval
-    double raw_offset = (std::max)(0.0, p99 - effective_interval_us);
+    // BBR negative-gain headroom: when GPU-bound, intentionally target slightly below
+    // maximum GPU throughput (+1.5% interval margin) to continuously drain the GPU queue.
+    double effective_p99 = p99;
+    if (bottleneck_kind == BottleneckKind::GpuBound && queue_drain_margin_pct > 0.0) {
+        effective_p99 = p99 * (1.0 + queue_drain_margin_pct);
+    }
 
-    // Clamp to effective interval — the offset should never more than double
-    // the target. In practice the P99 naturally limits the offset since it
-    // converges to the workload distribution. The old 15% clamp was too
-    // aggressive — when GPU cost genuinely exceeds the target (e.g., 16ms
-    // GPU vs 7ms target), the clamp prevented the system from adapting,
-    // locking FPS well below what the hardware could achieve.
-    double max_offset = effective_interval_us;
-    raw_offset = (std::min)(raw_offset, max_offset);
+    // Raw offset: how much the effective P99 exceeds the target interval
+    double raw_offset = (std::max)(0.0, effective_p99 - effective_interval_us);
 
-    // EMA smooth the offset to prevent step discontinuities
-    smoothed_offset_us += ema_alpha * (raw_offset - smoothed_offset_us);
+    // Clamp to effective interval
+    raw_offset = (std::min)(raw_offset, effective_interval_us);
 
-    // Decay fast convergence countdown
+    // Asymmetric EMA smoothing: fast attack (0.25) to prevent tear/stutter,
+    // smooth release (0.08) to avoid oscillation when load drops.
+    double alpha = (raw_offset > smoothed_offset_us) ? alpha_attack : alpha_release;
     if (fast_convergence_frames > 0) {
+        alpha = 0.30;
         fast_convergence_frames--;
-        if (fast_convergence_frames == 0) {
-            ema_alpha = 0.15;
+    }
+    smoothed_offset_us += alpha * (raw_offset - smoothed_offset_us);
+
+    // ── Headroom Streak Fast Release ──
+    // If we have >=12% confirmed hardware headroom for 60 consecutive frames,
+    // truncate old history from the long window to eliminate lingering low FPS.
+    if (enable_fast_release) {
+        double current_capped_interval = effective_interval_us + smoothed_offset_us;
+        if (smoothed_offset_us > 100.0 && bottleneck_work_us < current_capped_interval * 0.88) {
+            headroom_streak++;
+            if (headroom_streak >= 60) {
+                headroom_streak = 0;
+                if (dual_mode && long_win.Size() > 64) {
+                    auto recent = long_win.TakeLast(64);
+                    long_win.Clear();
+                    for (double v : recent) long_win.Push(v);
+                }
+                if (primary.Size() > 64) {
+                    auto recent = primary.TakeLast(64);
+                    primary.Clear();
+                    for (double v : recent) primary.Push(v);
+                }
+                LOG_DEBUG("AdaptiveSmoothing: fast release triggered by 60 frames of >=12%% headroom");
+            }
+        } else {
+            headroom_streak = (headroom_streak > 4) ? (headroom_streak - 4) : 0;
         }
     }
 
@@ -96,8 +116,6 @@ double AdaptiveSmoothing::Update(double render_time_us, double effective_interva
 }
 
 void AdaptiveSmoothing::SoftReset() {
-    // Retain last 25% of samples — preserves a baseline while allowing
-    // adaptation to the new scene/regime.
     size_t keep_primary = primary.Size() / 4;
     if (keep_primary > 0) {
         auto recent = primary.TakeLast(keep_primary);
@@ -121,10 +139,9 @@ void AdaptiveSmoothing::SoftReset() {
         }
     }
 
-    // Accelerate EMA for 32 frames to converge on new distribution
     fast_convergence_frames = 32;
-    ema_alpha = 0.30;
     consecutive_outliers = 0;
+    headroom_streak = 0;
 
     LOG_DEBUG("AdaptiveSmoothing: soft reset, retained %zu samples, fast convergence for 32 frames",
               primary.Size());
@@ -136,24 +153,26 @@ void AdaptiveSmoothing::Reset() {
     long_win.Clear();
     smoothed_offset_us = 0.0;
     raw_p99_us = 0.0;
-    ema_alpha = 0.15;
     fast_convergence_frames = 0;
     consecutive_outliers = 0;
+    headroom_streak = 0;
 
     g_smoothing_offset_us.store(0.0, std::memory_order_relaxed);
     g_smoothing_p99_us.store(0.0, std::memory_order_relaxed);
 }
 
-void AdaptiveSmoothing::SetConfig(bool dual, double percentile, bool enable) {
-    // If mode changed, soft reset to re-seed the new window configuration
+void AdaptiveSmoothing::SetConfig(bool dual, double percentile, bool enable,
+                                 double drain_margin, bool fast_rel) {
     bool mode_changed = (dual != dual_mode);
     dual_mode = dual;
     target_percentile = std::clamp(percentile, 0.50, 0.999);
     enabled = enable;
+    queue_drain_margin_pct = std::clamp(drain_margin, 0.0, 0.10);
+    enable_fast_release = fast_rel;
 
     if (mode_changed && primary.Size() > 0) {
         SoftReset();
-        LOG_INFO("AdaptiveSmoothing: config changed, dual=%d percentile=%.3f",
-                 dual, target_percentile);
+        LOG_INFO("AdaptiveSmoothing: config changed, dual=%d percentile=%.3f drain=%.3f fast_rel=%d",
+                 dual, target_percentile, queue_drain_margin_pct, enable_fast_release);
     }
 }

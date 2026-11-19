@@ -32,6 +32,7 @@
 #include "display_resolver.h"
 #include "vsync_control.h"
 #include "flip_model.h"
+#include "gpu_timer.h"
 
 // g_swapchain moved to flush.cpp (managed by OnInitSwapchain/OnDestroySwapchain)
 // g_presenting_swapchain moved to correlator.cpp (read-only consumer)
@@ -127,9 +128,17 @@ static void SuppressWEROnShutdown() {
 // ── ReShade callbacks ──
 static void on_init_device(reshade::api::device* device) {
     SwapMgr_OnInitDevice(device);
+    g_gpu_timer.OnInitDevice(device);
 }
 static void on_destroy_device(reshade::api::device* device) {
+    g_gpu_timer.OnDestroyDevice(device);
     SwapMgr_OnDestroyDevice(device);
+}
+static void on_execute_command_list(reshade::api::command_queue* queue, reshade::api::command_list* cmd_list) {
+    g_gpu_timer.OnCommandListExecute(queue, cmd_list);
+}
+static void on_finish_present(reshade::api::command_queue* queue, reshade::api::swapchain* sc) {
+    g_gpu_timer.OnFinishPresent(queue, sc);
 }
 static void on_init_swapchain(reshade::api::swapchain* sc, bool resize) {
     SwapMgr_OnInitSwapchain(sc, resize);
@@ -337,6 +346,7 @@ static void on_present(reshade::api::command_queue* queue,
 
     LARGE_INTEGER now_qpc;
     QueryPerformanceCounter(&now_qpc);
+    g_gpu_timer.OnPresent(queue, sc);
     EnfDisp_OnPresent(now_qpc.QuadPart);
 }
 
@@ -449,7 +459,9 @@ static bool DoInit(HMODULE hModule, HMODULE reshade_module) {
         reshade::register_event<reshade::addon_event::destroy_device>(on_destroy_device);
         reshade::register_event<reshade::addon_event::init_swapchain>(on_init_swapchain);
         reshade::register_event<reshade::addon_event::destroy_swapchain>(on_destroy_swapchain);
+        reshade::register_event<reshade::addon_event::execute_command_list>(on_execute_command_list);
         reshade::register_event<reshade::addon_event::present>(on_present);
+        reshade::register_event<reshade::addon_event::finish_present>(on_finish_present);
         reshade::register_event<reshade::addon_event::create_swapchain>(on_create_swapchain);
         reshade::register_event<reshade::addon_event::set_fullscreen_state>(on_set_fullscreen_state);
         RegisterOSD();
