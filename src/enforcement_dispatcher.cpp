@@ -1,4 +1,5 @@
 #include "enforcement_dispatcher.h"
+#include "scheduler.h"
 #include "vk_enforce.h"
 #include "pcl_hooks.h"
 #include "streamline_hooks.h"
@@ -117,6 +118,16 @@ void EnfDisp_OnPresent(int64_t now_qpc) {
 
         // Output FPS: simply the count of presents in the window
         g_output_fps.store(static_cast<double>(wcount), std::memory_order_relaxed);
+
+        // Track frame time from real presents as ground truth when limiter is off
+        static int64_t s_last_present_qpc_ft = 0;
+        if (s_last_present_qpc_ft > 0) {
+            double ft_us = static_cast<double>(now_qpc - s_last_present_qpc_ft) * 1000000.0 / static_cast<double>(freq.QuadPart);
+            if (ft_us > 0.0 && g_user_target_fps.load(std::memory_order_relaxed) <= 0) {
+                g_actual_frame_time_us.store(ft_us, std::memory_order_relaxed);
+            }
+        }
+        s_last_present_qpc_ft = now_qpc;
     }
 
     // DMFG passthrough: skip enforcement dispatch, FPS counter already updated

@@ -446,6 +446,32 @@ void OnMarker(uint64_t frameID, int64_t now) {
         }
     }
 
+    // ── Target FPS <= 0: Limiter disabled entirely ──
+    int target_fps = g_user_target_fps.load(std::memory_order_relaxed);
+    if (target_fps <= 0) {
+        g_next_deadline.store(0, std::memory_order_relaxed);
+        g_skip_present_gate.store(true, std::memory_order_relaxed);
+
+        LARGE_INTEGER qpc_now;
+        QueryPerformanceCounter(&qpc_now);
+        int64_t ts = qpc_now.QuadPart;
+
+        double telemetry_ft = (s_prev_enforcement_ts > 0)
+            ? qpc_to_us(ts - s_prev_enforcement_ts) : 0.0;
+        s_prev_enforcement_ts = ts;
+        s_last_enforcement_ts = ts;
+
+        if (telemetry_ft > 0.0) {
+            g_actual_frame_time_us.store(telemetry_ft, std::memory_order_relaxed);
+        }
+
+        g_predictor.OnEnforcement(frameID, ts);
+        DrainCorrelator(false, 0.0);
+        Baseline_Tick();
+        InvokeSleep(/*passthrough=*/true);
+        return;
+    }
+
     PacingMode mode = g_pacing_mode.load(std::memory_order_relaxed);
     if (mode == PacingMode::VRR)
         OnMarker_VRR(frameID, now);

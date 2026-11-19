@@ -1878,10 +1878,13 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
     double ft = g_actual_frame_time_us.load(std::memory_order_relaxed);
     if (ft > 0.0) {
         double instant_fps = 1000000.0 / ft;
-        if (s_real_fps > 0.0)
-            s_real_fps += 0.02 * (instant_fps - s_real_fps);
-        else
+        if (s_real_fps > 0.0) {
+            double delta = std::abs(instant_fps - s_real_fps);
+            double alpha = (delta > 20.0) ? 0.35 : (delta > 5.0 ? 0.15 : 0.05);
+            s_real_fps += alpha * (instant_fps - s_real_fps);
+        } else {
             s_real_fps = instant_fps;
+        }
     }
 
     // Throttle FPS display update to 2x per second for readability
@@ -1964,7 +1967,11 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
             if (output > 0.0 && fg_div_raw > 1) {
                 snprintf(buf, sizeof(buf), TR("%.0f fps (%.1f render)", "%.0f FPS (%.1f 渲染)"), output, s_display_fps);
             } else {
-                snprintf(buf, sizeof(buf), TR("%.1f fps", "%.1f FPS"), s_display_fps);
+                double show_fps = s_display_fps;
+                if (g_user_target_fps.load(std::memory_order_relaxed) <= 0 && output > 0.0 && std::abs(show_fps - output) > 10.0) {
+                    show_fps = output;
+                }
+                snprintf(buf, sizeof(buf), TR("%.1f fps", "%.1f FPS"), show_fps);
             }
             OSDTextColored(ColPerf(), buf);
         }
