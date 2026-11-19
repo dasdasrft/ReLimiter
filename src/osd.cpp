@@ -2118,8 +2118,6 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
             snprintf(buf, sizeof(buf), TR("Compare: %.0f%%", "基准对比: %.0f%%"), Baseline_GetProgress() * 100.0);
             OSDTextColored(ColStatus(), buf);
         }
-            OSDTextColored(ColStatus(), buf);
-        }
 
         // ═══════════════════════════════════
         // FRAMETIME GRAPH
