@@ -929,7 +929,8 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         ImGui::Spacing();
         ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%s", TR("System", "硬件监控 (AMD / Intel / NVIDIA)"));
         if (ImGui::Checkbox(TR("GPU Temp##osd_elem", "显卡温度##osd_elem"), &g_config.osd_show_gpu_temp)) config_dirty = true;
-        HelpTip(TR("GPU core temperature in Celsius. Color-coded: green < 70C, yellow < 85C, red above.", "GPU 核心温度（摄氏度）。绿色 < 70°C，黄色 < 85°C，红色超过 85°C。"));
+        HelpTip(TR("GPU core, hotspot, and VRAM temperatures in Celsius. Color-coded: green < 75C, yellow < 90C, red above.",
+                   "显卡核心、热点（结温）及显存温度（摄氏度）。绿色 < 75°C，黄色 < 90°C，红色超过 90°C。"));
         FlowSeparator();
         if (ImGui::Checkbox(TR("GPU Clock##osd_elem", "显卡频率##osd_elem"), &g_config.osd_show_gpu_clock)) config_dirty = true;
         HelpTip(TR("GPU core and memory clock speeds in MHz.", "GPU 核心与显存实时运行频率 (MHz)。"));
@@ -2646,14 +2647,23 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
 
             // GPU metrics
             if (g_config.osd_show_gpu_temp && hw.gpu_temp_c >= 0) {
-                char buf[32];
-                snprintf(buf, sizeof(buf), "GPU Temp: %d C", hw.gpu_temp_c);
-                // Color: green < 70, yellow < 85, red >= 85
+                char buf[96];
+                if (hw.gpu_temp_hotspot_c >= 0 && hw.gpu_temp_mem_c >= 0) {
+                    snprintf(buf, sizeof(buf), "GPU: %d C (Hot: %d C, VRAM: %d C)",
+                             hw.gpu_temp_c, hw.gpu_temp_hotspot_c, hw.gpu_temp_mem_c);
+                } else if (hw.gpu_temp_hotspot_c >= 0) {
+                    snprintf(buf, sizeof(buf), "GPU: %d C (Hot: %d C)",
+                             hw.gpu_temp_c, hw.gpu_temp_hotspot_c);
+                } else {
+                    snprintf(buf, sizeof(buf), "GPU Temp: %d C", hw.gpu_temp_c);
+                }
+                // Color: based on hottest sensor
+                int max_temp = (std::max)(hw.gpu_temp_c, hw.gpu_temp_hotspot_c);
                 ImVec4 col;
                 float b = g_config.osd_text_brightness;
-                if (hw.gpu_temp_c < 70)       col = ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f);
-                else if (hw.gpu_temp_c < 85)  col = ImVec4(0.9f*b, 0.9f*b, 0.2f*b, 1.0f);
-                else                          col = ImVec4(0.9f*b, 0.2f*b, 0.2f*b, 1.0f);
+                if (max_temp < 75)       col = ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f);
+                else if (max_temp < 90)  col = ImVec4(0.9f*b, 0.9f*b, 0.2f*b, 1.0f);
+                else                     col = ImVec4(0.9f*b, 0.2f*b, 0.2f*b, 1.0f);
                 OSDTextColored(col, buf);
             }
 

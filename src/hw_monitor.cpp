@@ -295,7 +295,10 @@ static void PollGPU(HWMonitorData& d) {
             for (NvU32 i = 0; i < thermal.count && i < NVAPI_MAX_THERMAL_SENSORS_LOCAL; i++) {
                 if (thermal.sensor[i].target == 1) {
                     d.gpu_temp_c = thermal.sensor[i].currentTemp;
-                    break;
+                } else if (thermal.sensor[i].target == 2) {
+                    d.gpu_temp_mem_c = thermal.sensor[i].currentTemp;
+                } else if (thermal.sensor[i].target == 3) {
+                    d.gpu_temp_hotspot_c = thermal.sensor[i].currentTemp;
                 }
             }
             if (d.gpu_temp_c < 0 && thermal.count > 0)
@@ -395,11 +398,13 @@ static void PollGPU(HWMonitorData& d) {
                 ADLPMLogDataOutput out = {};
                 out.size = sizeof(out);
                 if (s_ADL2_New_QueryPMLogData_Get(s_adl_context, s_adl_adapter_index, &out) == 0) {
-                    // Temperature: Sensor 8 (Edge) or Sensor 27 (Hotspot)
+                    // Temperature: Sensor 8 (Edge/Core), Sensor 27 (Hotspot/Junction), Sensor 9 (Memory/VRAM)
                     if (out.sensors[8].supported && out.sensors[8].value > 0)
                         d.gpu_temp_c = out.sensors[8].value;
-                    else if (out.sensors[27].supported && out.sensors[27].value > 0)
-                        d.gpu_temp_c = out.sensors[27].value;
+                    if (out.sensors[27].supported && out.sensors[27].value > 0)
+                        d.gpu_temp_hotspot_c = out.sensors[27].value;
+                    if (out.sensors[9].supported && out.sensors[9].value > 0)
+                        d.gpu_temp_mem_c = out.sensors[9].value;
 
                     // Clocks: Sensor 1 (GFX Core Clock MHz), Sensor 2 (Memory Clock MHz)
                     if (out.sensors[1].supported && out.sensors[1].value > 0)

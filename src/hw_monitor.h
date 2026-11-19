@@ -7,8 +7,10 @@
 // Thread-safe: polling runs on the OSD render thread, reads are atomic/relaxed.
 
 struct HWMonitorData {
-    // GPU (NVAPI) — -1 means unavailable
-    int   gpu_temp_c        = -1;   // °C
+    // GPU (NVAPI / AMD ADL) — -1 means unavailable
+    int   gpu_temp_c        = -1;   // Core / Edge °C
+    int   gpu_temp_hotspot_c = -1;  // Hotspot / Junction °C
+    int   gpu_temp_mem_c    = -1;   // VRAM / Memory °C
     int   gpu_clock_mhz     = -1;   // Core clock MHz
     int   gpu_mem_clock_mhz = -1;   // Memory clock MHz
     int   gpu_usage_pct     = -1;   // 0–100%
