@@ -121,6 +121,7 @@ static bool InitADL() {
     int num = 0;
     if (s_ADL2_Adapter_NumberOfAdapters_Get && s_ADL2_Adapter_NumberOfAdapters_Get(s_adl_context, &num) == 0 && num > 0) {
         int chosen_idx = 0;
+        bool found_active = false;
         if (s_ADL2_Adapter_AdapterInfo_Get) {
             std::vector<AdapterInfo> infos(num);
             memset(infos.data(), 0, sizeof(AdapterInfo) * num);
@@ -136,8 +137,13 @@ static bool InitADL() {
                                    infos[i].iVendorID == 0x1002 || infos[i].iVendorID == 0x3EA);
 
                     if (is_amd && infos[i].iPresent && infos[i].iExist) {
-                        chosen_idx = infos[i].iAdapterIndex;
-                        if (active) break; // Perfect match: active AMD adapter
+                        if (active) {
+                            chosen_idx = infos[i].iAdapterIndex;
+                            found_active = true;
+                            break; // Perfect match: active AMD adapter
+                        } else if (!found_active && chosen_idx == 0) {
+                            chosen_idx = infos[i].iAdapterIndex;
+                        }
                     }
                 }
             }
@@ -155,19 +161,41 @@ static bool InitADL() {
 }
 
 static void PollGPU(HWMonitorData& d) {
+    if (!s_adl_available) {
+        static ULONGLONG s_last_adl_retry = 0;
+        ULONGLONG now = GetTickCount64();
+        if (now - s_last_adl_retry > 2000) {
+            s_last_adl_retry = now;
+            s_adl_available = InitADL();
+        }
+    }
+
     if (s_adl_available && s_adl_context) {
         __try {
             if (s_ADL2_New_QueryPMLogData_Get) {
                 ADLPMLogDataOutput out = {};
                 out.size = sizeof(out);
-                if (s_ADL2_New_QueryPMLogData_Get(s_adl_context, s_adl_adapter_index, &out) == 0) {
+                int query_res = s_ADL2_New_QueryPMLogData_Get(s_adl_context, s_adl_adapter_index, &out);
+                // Fallback to adapter 0 if selected index fails
+                if (query_res != 0 && s_adl_adapter_index != 0) {
+                    query_res = s_ADL2_New_QueryPMLogData_Get(s_adl_context, 0, &out);
+                    if (query_res == 0) s_adl_adapter_index = 0;
+                }
+
+                if (query_res == 0) {
+                    auto parse_temp = [](int val) -> int {
+                        if (val <= 0) return -1;
+                        if (val > 1000) return val / 1000;
+                        return val;
+                    };
+
                     // Temperature: Sensor 8 (Edge/Core), Sensor 27 (Hotspot/Junction), Sensor 9 (Memory/VRAM)
                     if (out.sensors[8].supported && out.sensors[8].value > 0)
-                        d.gpu_temp_c = out.sensors[8].value;
+                        d.gpu_temp_c = parse_temp(out.sensors[8].value);
                     if (out.sensors[27].supported && out.sensors[27].value > 0)
-                        d.gpu_temp_hotspot_c = out.sensors[27].value;
+                        d.gpu_temp_hotspot_c = parse_temp(out.sensors[27].value);
                     if (out.sensors[9].supported && out.sensors[9].value > 0)
-                        d.gpu_temp_mem_c = out.sensors[9].value;
+                        d.gpu_temp_mem_c = parse_temp(out.sensors[9].value);
 
                     // Clocks: Sensor 1 (GFX Core Clock MHz), Sensor 2 (Memory Clock MHz)
                     if (out.sensors[1].supported && out.sensors[1].value > 0)

@@ -51,10 +51,14 @@ static PQIScores ComputeFromWindow(const double* ft, const double* tgt,
     avg_target /= n;
     if (avg_target <= 0.0) avg_target = 6944.0; // fallback 144Hz
 
-    s.cadence = 1.0 - Clamp01(iqr / avg_target);
+    // Reference interval: use target, or median actual frame time if running GPU-bound below target
+    double median_ft = sorted[n / 2];
+    double ref_interval = (median_ft > avg_target * 1.05) ? median_ft : avg_target;
+
+    s.cadence = 1.0 - Clamp01(iqr / ref_interval);
 
     // ── Stutter: fraction of smooth consecutive pairs ──
-    double threshold = avg_target * 0.15;
+    double threshold = ref_interval * 0.15;
     int smooth = 0, total = 0;
     for (int i = 1; i < n; i++) {
         int idx_prev = (head - n + i - 1 + capacity) % capacity;

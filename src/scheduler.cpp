@@ -928,14 +928,18 @@ static void OnMarker_VRR(uint64_t frameID, int64_t now) {
         s_prev_frame_deviation_us = 0.0;
     }
 
-    // Smoothness: EMA of |actual - target| deviation, skipping outliers.
-    if (telemetry_ft > 0.0 && telemetry_ft < effective_interval * 4.0) {
-        double deviation = std::abs(telemetry_ft - effective_interval);
-        double prev_smooth = g_smoothness_us.load(std::memory_order_relaxed);
-        double smoothed = (prev_smooth > 0.0)
-            ? prev_smooth + 0.16 * (deviation - prev_smooth)
-            : deviation;
-        g_smoothness_us.store(smoothed, std::memory_order_relaxed);
+    // Smoothness: frame-to-frame pacing jitter EMA (skipping loading/pause outliers >100ms)
+    static double s_prev_smooth_ft = 0.0;
+    if (telemetry_ft > 0.0 && telemetry_ft < 100000.0) {
+        if (s_prev_smooth_ft > 0.0) {
+            double jitter = std::abs(telemetry_ft - s_prev_smooth_ft);
+            double prev_smooth = g_smoothness_us.load(std::memory_order_relaxed);
+            double smoothed = (prev_smooth > 0.0)
+                ? prev_smooth + 0.12 * (jitter - prev_smooth)
+                : jitter;
+            g_smoothness_us.store(smoothed, std::memory_order_relaxed);
+        }
+        s_prev_smooth_ft = telemetry_ft;
     }
 
     // Wake accuracy for PQI: use final landing error recorded inside

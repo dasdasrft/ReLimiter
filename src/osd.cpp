@@ -779,7 +779,7 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         HelpTip(TR("CPU pipeline time: SIM_START to RENDERSUBMIT_END. Measures how long the CPU spends on simulation + render submission.", "CPU 管线耗时：从模拟开始到渲染指令提交结束。测量 CPU 在逻辑与提交上的耗时。"));
         FlowSeparator();
         if (ImGui::Checkbox(TR("GPU Render##osd_elem", "GPU 渲染耗时##osd_elem"), &g_config.osd_show_gpu_render_time)) config_dirty = true;
-        HelpTip(TR("GPU active render time in ms. Shows actual GPU work excluding idle bubbles. (AMD/Intel/NVIDIA supported)", "GPU 纯活跃渲染耗时 (毫秒)。展示 GPU 纯渲染负载（支持 AMD/Intel/NVIDIA 显卡）。"));
+        HelpTip(TR("GPU active render time in ms. Shows actual GPU work excluding idle bubbles (AMD Radeon).", "GPU 纯活跃渲染耗时 (毫秒)。展示 GPU 纯渲染负载（AMD Radeon 专用优化）。"));
         FlowSeparator();
         if (ImGui::Checkbox(TR("Frame Cost##osd_elem", "整帧总开销##osd_elem"), &g_config.osd_show_total_frame_cost)) config_dirty = true;
         HelpTip(TR("Total frame cost: sim + render + GPU. The real cost of a frame before limiter sleep.", "整帧总耗时：模拟 + 提交 + 渲染。限帧器休眠前的实际帧开销。"));
@@ -1423,24 +1423,32 @@ void OSD_CyclePosition() {
 }
 
 static void RecomputeLowFPS() {
-    int n = s_low_history_count < LOW_HISTORY_SIZE ? s_low_history_count : LOW_HISTORY_SIZE;
+    int total = s_low_history_count < LOW_HISTORY_SIZE ? s_low_history_count : LOW_HISTORY_SIZE;
 
-    // 1% low
+    // Filter out pause/loading outliers (>100ms / <10 FPS)
+    static double sorted[LOW_HISTORY_SIZE];
+    int n = 0;
+    for (int i = 0; i < total; i++) {
+        double val = s_low_history[i];
+        if (val > 0.0 && val <= 100000.0) { // under 100ms
+            sorted[n++] = val;
+        }
+    }
+
     if (n >= 30) {
-        static double sorted[LOW_HISTORY_SIZE];
-        for (int i = 0; i < n; i++)
-            sorted[i] = s_low_history[i];
         std::sort(sorted, sorted + n);
 
+        // 1% low: 99th percentile frame time (or average of top 1% slowest frames)
         int tail_start = static_cast<int>(0.99 * (n - 1));
         int tail_count = n - tail_start;
+        if (tail_count < 1) tail_count = 1;
         double sum = 0.0;
         for (int i = tail_start; i < n; i++)
             sum += sorted[i];
         double avg_worst = sum / tail_count;
         s_cached_1pct_low = (avg_worst > 0.0) ? 1000000.0 / avg_worst : 0.0;
 
-        // 0.1% low (reuse sorted array)
+        // 0.1% low: 99.9th percentile frame time
         if (n >= 100) {
             int tail_01 = static_cast<int>(0.999 * (n - 1));
             int count_01 = n - tail_01;
@@ -1850,9 +1858,8 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
             if (divisor >= 2) {
                 display_ft = ft / static_cast<double>(divisor);
             }
-            // Feed 1% low history when actively pacing (T0-T2a).
-            // T3/T4 are passthrough — unlocked frame times corrupt the window.
-            if (g_current_tier < Tier::Tier3) {
+            // Feed 1% low history when actively pacing (T0-T2a) and not in a loading freeze (>100ms)
+            if (g_current_tier < Tier::Tier3 && display_ft <= 100000.0) {
                 s_low_history[s_low_history_idx] = display_ft;
                 s_low_history_idx = (s_low_history_idx + 1) % LOW_HISTORY_SIZE;
                 if (s_low_history_count < LOW_HISTORY_SIZE) s_low_history_count++;
