@@ -1564,18 +1564,18 @@ static void RecomputeLowFPS() {
     }
 }
 
-// ── Category colors ──
-static ImVec4 ColPerf()     { float b = g_config.osd_text_brightness; return ImVec4(0.4f*b, 0.9f*b, 0.9f*b, 1.0f); }
-static ImVec4 ColLatency()  { float b = g_config.osd_text_brightness; return ImVec4(1.0f*b, 0.7f*b, 0.3f*b, 1.0f); }
-static ImVec4 ColPipeline() { float b = g_config.osd_text_brightness; return ImVec4(0.6f*b, 0.8f*b, 1.0f*b, 1.0f); }
-static ImVec4 ColSystem()   { float b = g_config.osd_text_brightness; return ImVec4(0.7f*b, 0.7f*b, 0.7f*b, 1.0f); }
-static ImVec4 ColStatus()   { float b = g_config.osd_text_brightness; return ImVec4(1.0f*b, 0.3f*b, 0.3f*b, 1.0f); }
+// ── Category colors (Muted Nord / MangoHud Aesthetic Palette) ──
+static ImVec4 ColPerf()     { float b = g_config.osd_text_brightness; return ImVec4(0.35f*b, 0.82f*b, 0.55f*b, 1.0f); } // Sage Green
+static ImVec4 ColLatency()  { float b = g_config.osd_text_brightness; return ImVec4(0.95f*b, 0.72f*b, 0.32f*b, 1.0f); } // Warm Gold
+static ImVec4 ColPipeline() { float b = g_config.osd_text_brightness; return ImVec4(0.60f*b, 0.75f*b, 0.95f*b, 1.0f); } // Slate Blue
+static ImVec4 ColSystem()   { float b = g_config.osd_text_brightness; return ImVec4(0.88f*b, 0.90f*b, 0.92f*b, 1.0f); } // Crisp Off-White
+static ImVec4 ColStatus()   { float b = g_config.osd_text_brightness; return ImVec4(0.95f*b, 0.35f*b, 0.35f*b, 1.0f); } // Crimson
 
 static ImVec4 PQIColor(double score) {
     float b = g_config.osd_text_brightness;
-    if (score >= 0.9) return ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f);
-    if (score >= 0.7) return ImVec4(0.9f*b, 0.9f*b, 0.2f*b, 1.0f);
-    return ImVec4(0.9f*b, 0.2f*b, 0.2f*b, 1.0f);
+    if (score >= 0.9) return ImVec4(0.35f*b, 0.82f*b, 0.55f*b, 1.0f);
+    if (score >= 0.7) return ImVec4(0.95f*b, 0.75f*b, 0.25f*b, 1.0f);
+    return ImVec4(0.95f*b, 0.35f*b, 0.35f*b, 1.0f);
 }
 
 static void OSDTextColored(ImVec4 col, const char* text) {
@@ -1690,16 +1690,42 @@ static inline ParsedKeybind GetCachedKeybind(const std::string& str, std::string
     return cached_kb;
 }
 
-// ── Modern OSD badge & layout helpers ──
-static void DrawBadge(const char* tag, ImU32 bg_col, ImU32 text_col, float scale) {
+// ── Modern OSD badge & layout helpers (MangoHud / Nord Matte Palette) ──
+static constexpr ImU32 BADGE_FPS  = IM_COL32(82, 185, 124, 255);  // Sage Green
+static constexpr ImU32 BADGE_GPU  = IM_COL32(235, 90, 100, 255);  // AMD Radeon Crimson
+static constexpr ImU32 BADGE_VRAM = IM_COL32(175, 140, 220, 255); // Lavender / Mauve
+static constexpr ImU32 BADGE_CPU  = IM_COL32(80, 155, 235, 255);  // Electric Blue
+static constexpr ImU32 BADGE_RAM  = IM_COL32(215, 130, 155, 255); // Dusty Rose
+static constexpr ImU32 BADGE_LAT  = IM_COL32(235, 170, 70, 255);  // Warm Gold / Amber
+static constexpr ImU32 BADGE_PIPE = IM_COL32(135, 155, 225, 255); // Slate Indigo
+static constexpr ImU32 BADGE_API  = IM_COL32(130, 150, 170, 255); // Steel Grey
+static constexpr ImU32 BADGE_REC  = IM_COL32(220, 50, 50, 255);   // Red
+static constexpr ImU32 BADGE_BASE = IM_COL32(255, 130, 0, 255);   // Amber
+
+static void DrawBadge(const char* tag, ImU32 accent_col, float scale, float min_width = 0.0f) {
     ImVec2 txt_sz = ImGui::CalcTextSize(tag);
     float pad_x = 5.0f * scale;
     float pad_y = 1.5f * scale;
+    float pill_w = txt_sz.x + pad_x * 2.0f;
+    if (min_width > 0.0f && pill_w < min_width * scale) {
+        pill_w = min_width * scale;
+        pad_x = (pill_w - txt_sz.x) * 0.5f;
+    }
     ImVec2 p0 = ImGui::GetCursorScreenPos();
-    ImVec2 p1 = ImVec2(p0.x + txt_sz.x + pad_x * 2.0f, p0.y + txt_sz.y + pad_y * 2.0f);
+    ImVec2 p1 = ImVec2(p0.x + pill_w, p0.y + txt_sz.y + pad_y * 2.0f);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     float round_r = (std::min)(4.0f * scale, (p1.y - p0.y) * 0.5f);
+
+    ImU32 r = (accent_col) & 0xFF;
+    ImU32 g = (accent_col >> 8) & 0xFF;
+    ImU32 b = (accent_col >> 16) & 0xFF;
+
+    ImU32 bg_col = IM_COL32(r, g, b, 32);       // 12.5% soft tinted frosted glass
+    ImU32 border_col = IM_COL32(r, g, b, 115);  // 45% delicate hairline border
+    ImU32 text_col = IM_COL32(r, g, b, 245);    // crisp readable label
+
     dl->AddRectFilled(p0, p1, bg_col, round_r);
+    dl->AddRect(p0, p1, border_col, round_r, 0, 1.0f);
     dl->AddText(ImVec2(p0.x + pad_x, p0.y + pad_y), text_col, tag);
     ImGui::SetCursorScreenPos(ImVec2(p1.x + 6.0f * scale, p0.y));
 }
@@ -1707,24 +1733,25 @@ static void DrawBadge(const char* tag, ImU32 bg_col, ImU32 text_col, float scale
 static void DrawDot(float scale) {
     ImGui::SameLine(0.0f, 4.0f * scale);
     float b = g_config.osd_text_brightness;
-    ImGui::TextColored(ImVec4(0.45f * b, 0.48f * b, 0.52f * b, 0.75f), "·");
+    ImGui::TextColored(ImVec4(0.45f * b, 0.50f * b, 0.58f * b, 0.70f), "·");
     ImGui::SameLine(0.0f, 4.0f * scale);
 }
 
 static void DrawBarDivider(float scale) {
-    ImGui::SameLine(0.0f, 8.0f * scale);
+    ImGui::SameLine(0.0f, 7.0f * scale);
     float b = g_config.osd_text_brightness;
-    ImGui::TextColored(ImVec4(0.4f * b, 0.45f * b, 0.5f * b, 0.6f), "|");
-    ImGui::SameLine(0.0f, 8.0f * scale);
+    ImGui::TextColored(ImVec4(0.35f * b, 0.42f * b, 0.50f * b, 0.55f), "|");
+    ImGui::SameLine(0.0f, 7.0f * scale);
 }
 
 static void DrawModernCardOSD(float scale, double ft_ms) {
     const HWMonitorData& hw = HWMonitor_GetData();
     float b = g_config.osd_text_brightness;
+    constexpr float COL_W = 38.0f; // Aligned badge column width for perfect tabular layout
 
     // ── Module 1: FPS & Frametime ──
     if (g_config.osd_show_fps || g_config.osd_show_frametime || g_config.osd_show_1pct_low || g_config.osd_show_0_1pct_low) {
-        DrawBadge("FPS", IM_COL32(0, 160, 220, 230), IM_COL32(10, 25, 35, 255), scale);
+        DrawBadge("FPS", BADGE_FPS, scale, COL_W);
 
         bool has_first = false;
         if (g_config.osd_show_fps) {
@@ -1755,7 +1782,7 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
         if (g_config.osd_show_1pct_low && s_cached_1pct_low > 0.0) {
             if (has_first) DrawDot(scale);
             char buf[32];
-            snprintf(buf, sizeof(buf), TR("1%% Low: %.0f", "1%%: %.0f"), s_cached_1pct_low);
+            snprintf(buf, sizeof(buf), TR("1%%: %.0f", "1%%: %.0f"), s_cached_1pct_low);
             OSDTextColored(ColPerf(), buf);
             has_first = true;
         }
@@ -1763,7 +1790,7 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
         if (g_config.osd_show_0_1pct_low && s_cached_01pct_low > 0.0) {
             if (has_first) DrawDot(scale);
             char buf[32];
-            snprintf(buf, sizeof(buf), TR("0.1%% Low: %.0f", "0.1%%: %.0f"), s_cached_01pct_low);
+            snprintf(buf, sizeof(buf), TR("0.1%%: %.0f", "0.1%%: %.0f"), s_cached_01pct_low);
             OSDTextColored(ColPerf(), buf);
         }
     }
@@ -1774,10 +1801,8 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
         if (g_config.osd_show_pqi || g_config.osd_show_pqi_breakdown)
             pqi = PQI_GetRolling();
 
-        ImU32 pqi_bg = (pqi.pqi >= 90.0) ? IM_COL32(46, 125, 50, 230)
-                     : (pqi.pqi >= 70.0 ? IM_COL32(230, 160, 20, 230) : IM_COL32(198, 40, 40, 230));
-
-        DrawBadge("PQI", pqi_bg, IM_COL32(255, 255, 255, 255), scale);
+        ImU32 pqi_accent = (pqi.pqi >= 90.0) ? BADGE_FPS : (pqi.pqi >= 70.0 ? BADGE_LAT : BADGE_GPU);
+        DrawBadge("PQI", pqi_accent, scale, COL_W);
 
         bool has_first = false;
         if (g_config.osd_show_pqi) {
@@ -1792,7 +1817,7 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
                                                " (节奏: %.0f%% · 卡顿: %.0f%% · 准时: %.0f%%)"),
                          pqi.cadence * 100.0, pqi.stutter * 100.0, pqi.deadline * 100.0);
                 ImGui::SameLine(0.0f, 2.0f * scale);
-                OSDTextColored(ImVec4(0.7f*b, 0.7f*b, 0.7f*b, 1.0f), bbuf);
+                OSDTextColored(ImVec4(0.60f*b, 0.65f*b, 0.72f*b, 1.0f), bbuf);
             }
         }
 
@@ -1802,8 +1827,8 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
                 if (has_first) DrawDot(scale);
                 char buf[32];
                 snprintf(buf, sizeof(buf), TR("Smooth: %.2f ms", "平滑: %.2f ms"), smooth / 1000.0);
-                ImVec4 col = (smooth < 500.0) ? ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f)
-                           : (smooth < 1500.0 ? ImVec4(0.9f*b, 0.9f*b, 0.2f*b, 1.0f) : ImVec4(0.9f*b, 0.2f*b, 0.2f*b, 1.0f));
+                ImVec4 col = (smooth < 500.0) ? ImVec4(0.35f*b, 0.82f*b, 0.55f*b, 1.0f)
+                           : (smooth < 1500.0 ? ImVec4(0.95f*b, 0.75f*b, 0.25f*b, 1.0f) : ImVec4(0.95f*b, 0.35f*b, 0.35f*b, 1.0f));
                 OSDTextColored(col, buf);
             }
         }
@@ -1813,11 +1838,10 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
     bool has_gpu = (g_config.osd_show_gpu_usage && hw.gpu_usage_pct >= 0) ||
                    (g_config.osd_show_gpu_clock && hw.gpu_clock_mhz >= 0) ||
                    (g_config.osd_show_gpu_temp && hw.gpu_temp_c >= 0) ||
-                   (g_config.osd_show_gpu_power && hw.gpu_power_w >= 0) ||
-                   (g_config.osd_show_vram && hw.vram_used_mb >= 0);
+                   (g_config.osd_show_gpu_power && hw.gpu_power_w >= 0);
 
     if (has_gpu) {
-        DrawBadge("GPU", IM_COL32(230, 57, 70, 230), IM_COL32(255, 255, 255, 255), scale);
+        DrawBadge("GPU", BADGE_GPU, scale, COL_W);
 
         bool has_first = false;
         if (g_config.osd_show_gpu_usage && hw.gpu_usage_pct >= 0) {
@@ -1840,15 +1864,29 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
 
         if (g_config.osd_show_gpu_temp && hw.gpu_temp_c >= 0) {
             if (has_first) DrawDot(scale);
-            char buf[64];
-            if (hw.gpu_temp_hotspot_c >= 0)
-                snprintf(buf, sizeof(buf), "%d°C (Hot %d°C)", hw.gpu_temp_c, hw.gpu_temp_hotspot_c);
-            else
-                snprintf(buf, sizeof(buf), "%d°C", hw.gpu_temp_c);
-            int max_temp = (std::max)(hw.gpu_temp_c, hw.gpu_temp_hotspot_c);
-            ImVec4 col = (max_temp < 75) ? ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f)
-                       : (max_temp < 90 ? ImVec4(0.9f*b, 0.9f*b, 0.2f*b, 1.0f) : ImVec4(0.9f*b, 0.2f*b, 0.2f*b, 1.0f));
-            OSDTextColored(col, buf);
+            char tbuf[96];
+            if (hw.gpu_temp_hotspot_c >= 0 && hw.gpu_temp_mem_c >= 0) {
+                snprintf(tbuf, sizeof(tbuf), "%d°C (Hot: %d°C, VRAM: %d°C)",
+                         hw.gpu_temp_c, hw.gpu_temp_hotspot_c, hw.gpu_temp_mem_c);
+            } else if (hw.gpu_temp_hotspot_c >= 0) {
+                snprintf(tbuf, sizeof(tbuf), "%d°C (Hot: %d°C)",
+                         hw.gpu_temp_c, hw.gpu_temp_hotspot_c);
+            } else if (hw.gpu_temp_mem_c >= 0) {
+                snprintf(tbuf, sizeof(tbuf), "%d°C (VRAM: %d°C)",
+                         hw.gpu_temp_c, hw.gpu_temp_mem_c);
+            } else {
+                snprintf(tbuf, sizeof(tbuf), "%d°C", hw.gpu_temp_c);
+            }
+
+            int max_temp = hw.gpu_temp_c;
+            if (hw.gpu_temp_hotspot_c > max_temp) max_temp = hw.gpu_temp_hotspot_c;
+            if (hw.gpu_temp_mem_c > max_temp) max_temp = hw.gpu_temp_mem_c;
+
+            ImVec4 col;
+            if (max_temp < 75)       col = ImVec4(0.88f * b, 0.90f * b, 0.92f * b, 1.0f);
+            else if (max_temp < 90)  col = ImVec4(0.95f * b, 0.75f * b, 0.25f * b, 1.0f);
+            else                     col = ImVec4(0.95f * b, 0.35f * b, 0.35f * b, 1.0f);
+            OSDTextColored(col, tbuf);
             has_first = true;
         }
 
@@ -1859,27 +1897,32 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
             OSDTextColored(ColSystem(), buf);
             has_first = true;
         }
-
-        if (g_config.osd_show_vram && hw.vram_used_mb >= 0 && hw.vram_total_mb > 0) {
-            if (has_first) DrawDot(scale);
-            char buf[48];
-            snprintf(buf, sizeof(buf), TR("VRAM: %.1f / %.1f GB", "显存: %.1f / %.1f GB"),
-                     hw.vram_used_mb / 1024.0, hw.vram_total_mb / 1024.0);
-            float usage = static_cast<float>(hw.vram_used_mb) / static_cast<float>(hw.vram_total_mb);
-            ImVec4 col = (usage > 0.90f) ? ImVec4(1.0f*b, 0.3f*b, 0.3f*b, 1.0f)
-                       : (usage > 0.75f ? ImVec4(1.0f*b, 0.85f*b, 0.0f*b, 1.0f) : ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f));
-            OSDTextColored(col, buf);
-        }
     }
 
-    // ── Module 4: CPU (Electric Blue) ──
+    // ── Module 3b: VRAM (Lavender Mauve) ──
+    if (g_config.osd_show_vram && hw.vram_used_mb >= 0 && hw.vram_total_mb > 0) {
+        DrawBadge("VRAM", BADGE_VRAM, scale, COL_W);
+        float usage = static_cast<float>(hw.vram_used_mb) / static_cast<float>(hw.vram_total_mb);
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%.1f / %.1f GB (%.0f%%)",
+                 hw.vram_used_mb / 1024.0, hw.vram_total_mb / 1024.0, usage * 100.0f);
+        ImVec4 col;
+        if (usage > 0.90f)
+            col = ImVec4(0.95f*b, 0.35f*b, 0.35f*b, 1.0f);
+        else if (usage > 0.75f)
+            col = ImVec4(0.95f*b, 0.75f*b, 0.25f*b, 1.0f);
+        else
+            col = ImVec4(0.88f*b, 0.90f*b, 0.92f*b, 1.0f);
+        OSDTextColored(col, buf);
+    }
+
+    // ── Module 4: CPU (Nord Electric Blue) ──
     bool has_cpu = (g_config.osd_show_cpu_usage && hw.cpu_usage_pct >= 0) ||
-                   (g_config.osd_show_cpu_clock && hw.cpu_clock_mhz > 0) ||
-                   (g_config.osd_show_cpu_power && hw.cpu_power_w > 0) ||
-                   (g_config.osd_show_ram && hw.ram_used_mb >= 0);
+                   (g_config.osd_show_cpu_clock && (hw.cpu_clock_mhz > 0 || hw.cpu_clock_p_mhz > 0)) ||
+                   (g_config.osd_show_cpu_power && hw.cpu_power_w > 0);
 
     if (has_cpu) {
-        DrawBadge("CPU", IM_COL32(33, 140, 250, 230), IM_COL32(255, 255, 255, 255), scale);
+        DrawBadge("CPU", BADGE_CPU, scale, COL_W);
 
         bool has_first = false;
         if (g_config.osd_show_cpu_usage && hw.cpu_usage_pct >= 0) {
@@ -1889,12 +1932,19 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
             has_first = true;
         }
 
-        if (g_config.osd_show_cpu_clock && hw.cpu_clock_mhz > 0) {
-            if (has_first) DrawDot(scale);
-            char buf[32];
-            snprintf(buf, sizeof(buf), "%d MHz", hw.cpu_clock_mhz);
-            OSDTextColored(ColSystem(), buf);
-            has_first = true;
+        if (g_config.osd_show_cpu_clock) {
+            char buf[64] = "";
+            if (hw.cpu_is_hybrid && hw.cpu_clock_p_mhz > 0 && hw.cpu_clock_e_mhz > 0) {
+                snprintf(buf, sizeof(buf), TR("P: %.1fG · E: %.1fG", "大核: %.1fG · 小核: %.1fG"),
+                         hw.cpu_clock_p_mhz / 1000.0, hw.cpu_clock_e_mhz / 1000.0);
+            } else if (hw.cpu_clock_mhz > 0) {
+                snprintf(buf, sizeof(buf), "%.1f GHz", hw.cpu_clock_mhz / 1000.0);
+            }
+            if (buf[0] != '\0') {
+                if (has_first) DrawDot(scale);
+                OSDTextColored(ColSystem(), buf);
+                has_first = true;
+            }
         }
 
         if (g_config.osd_show_cpu_power && hw.cpu_power_w > 0) {
@@ -1904,14 +1954,16 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
             OSDTextColored(ColSystem(), buf);
             has_first = true;
         }
+    }
 
-        if (g_config.osd_show_ram && hw.ram_used_mb >= 0 && hw.ram_total_mb > 0) {
-            if (has_first) DrawDot(scale);
-            char buf[48];
-            snprintf(buf, sizeof(buf), TR("RAM: %.1f / %.1f GB", "内存: %.1f / %.1f GB"),
-                     hw.ram_used_mb / 1024.0, hw.ram_total_mb / 1024.0);
-            OSDTextColored(ColSystem(), buf);
-        }
+    // ── Module 4b: RAM (Dusty Rose) ──
+    if (g_config.osd_show_ram && hw.ram_used_mb >= 0 && hw.ram_total_mb > 0) {
+        DrawBadge("RAM", BADGE_RAM, scale, COL_W);
+        float usage = static_cast<float>(hw.ram_used_mb) / static_cast<float>(hw.ram_total_mb);
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%.1f / %.1f GB (%.0f%%)",
+                 hw.ram_used_mb / 1024.0, hw.ram_total_mb / 1024.0, usage * 100.0f);
+        OSDTextColored(ColSystem(), buf);
     }
 
     // ── Module 5: Latency & Bottleneck (Warm Amber) ──
@@ -1929,7 +1981,7 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
     bool has_lat = (cpu_lat_us > 0.0) || (gpu_lat_us > 0.0) || (total_cost_us > 0.0) || g_config.osd_show_bottleneck;
 
     if (has_lat) {
-        DrawBadge("LAT", IM_COL32(245, 140, 0, 230), IM_COL32(255, 255, 255, 255), scale);
+        DrawBadge("LAT", BADGE_LAT, scale, COL_W);
 
         bool has_first = false;
         if (gpu_lat_us > 0.0) {
@@ -1960,9 +2012,9 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
             BottleneckKind bkind = g_bottleneck_kind.load(std::memory_order_relaxed);
             const char* bstr = (bkind == BottleneckKind::GpuBound) ? TR("GPU Bound", "显卡受限")
                              : ((bkind == BottleneckKind::CpuBound) ? TR("CPU Bound", "处理器受限") : TR("Balanced", "负载平衡"));
-            ImU32 bcol = (bkind == BottleneckKind::GpuBound) ? IM_COL32(230, 81, 0, 220)
-                       : ((bkind == BottleneckKind::CpuBound) ? IM_COL32(2, 119, 189, 220) : IM_COL32(110, 110, 110, 200));
-            DrawBadge(bstr, bcol, IM_COL32(255, 255, 255, 255), scale);
+            ImU32 bcol = (bkind == BottleneckKind::GpuBound) ? BADGE_GPU
+                       : ((bkind == BottleneckKind::CpuBound) ? BADGE_CPU : BADGE_API);
+            DrawBadge(bstr, bcol, scale);
         }
     }
 
@@ -1972,7 +2024,7 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
     bool has_pipe = show_fg_active || g_config.osd_show_limiter || (g_config.osd_show_adaptive_smoothing && g_config.adaptive_smoothing);
 
     if (has_pipe) {
-        DrawBadge("PIPE", IM_COL32(106, 27, 154, 230), IM_COL32(255, 255, 255, 255), scale);
+        DrawBadge("PIPE", BADGE_PIPE, scale, COL_W);
 
         bool has_first = false;
         if (show_fg_active) {
@@ -2004,7 +2056,7 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
 
     // ── Module 7: Display & API ──
     if (g_config.osd_show_api || g_config.osd_show_resolution || g_config.osd_show_flip_model) {
-        DrawBadge("API", IM_COL32(100, 115, 130, 230), IM_COL32(255, 255, 255, 255), scale);
+        DrawBadge("API", BADGE_API, scale, COL_W);
 
         bool has_first = false;
         if (g_config.osd_show_api) {
@@ -2037,13 +2089,13 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
 
     // ── Module 8: Status (REC / Baseline) ──
     if (CSV_IsEnabled()) {
-        DrawBadge("REC", IM_COL32(211, 47, 47, 240), IM_COL32(255, 255, 255, 255), scale);
+        DrawBadge("REC", BADGE_REC, scale, COL_W);
         OSDTextColored(ColStatus(), TR("Recording", "录制中"));
     }
     if (Baseline_IsCapturing() || Baseline_IsComparison()) {
         char buf[32];
         snprintf(buf, sizeof(buf), "%.0f%%", Baseline_GetProgress() * 100.0);
-        DrawBadge("BASE", IM_COL32(255, 111, 0, 240), IM_COL32(255, 255, 255, 255), scale);
+        DrawBadge("BASE", BADGE_BASE, scale, COL_W);
         OSDTextColored(ColStatus(), buf);
     }
 }
@@ -2054,7 +2106,7 @@ static void DrawModernBarOSD(float scale, double ft_ms) {
 
     // Module 1: FPS
     if (g_config.osd_show_fps) {
-        DrawBadge("FPS", IM_COL32(0, 160, 220, 230), IM_COL32(10, 25, 35, 255), scale);
+        DrawBadge("FPS", BADGE_FPS, scale);
         double output = s_display_output_fps;
         int fg_div_raw = ComputeFGDivisorRaw();
         char buf[64];
@@ -2083,14 +2135,22 @@ static void DrawModernBarOSD(float scale, double ft_ms) {
     // Module 2: GPU
     if ((g_config.osd_show_gpu_usage && hw.gpu_usage_pct >= 0) || (g_config.osd_show_gpu_temp && hw.gpu_temp_c >= 0)) {
         if (has_prev) DrawBarDivider(scale);
-        DrawBadge("GPU", IM_COL32(230, 57, 70, 230), IM_COL32(255, 255, 255, 255), scale);
-        char gbuf[64];
-        if (hw.gpu_usage_pct >= 0 && hw.gpu_temp_c >= 0) {
-            snprintf(gbuf, sizeof(gbuf), "%d%% · %d°C", hw.gpu_usage_pct, hw.gpu_temp_c);
-        } else if (hw.gpu_usage_pct >= 0) {
-            snprintf(gbuf, sizeof(gbuf), "%d%%", hw.gpu_usage_pct);
-        } else {
-            snprintf(gbuf, sizeof(gbuf), "%d°C", hw.gpu_temp_c);
+        DrawBadge("GPU", BADGE_GPU, scale);
+        char gbuf[96];
+        char tbuf[48] = "";
+        if (g_config.osd_show_gpu_temp && hw.gpu_temp_c >= 0) {
+            if (hw.gpu_temp_mem_c >= 0) {
+                snprintf(tbuf, sizeof(tbuf), " · %d°C (Mem %d°C)", hw.gpu_temp_c, hw.gpu_temp_mem_c);
+            } else if (hw.gpu_temp_hotspot_c >= 0) {
+                snprintf(tbuf, sizeof(tbuf), " · %d°C (Hot %d°C)", hw.gpu_temp_c, hw.gpu_temp_hotspot_c);
+            } else {
+                snprintf(tbuf, sizeof(tbuf), " · %d°C", hw.gpu_temp_c);
+            }
+        }
+        if (hw.gpu_usage_pct >= 0) {
+            snprintf(gbuf, sizeof(gbuf), "%d%%%s", hw.gpu_usage_pct, tbuf);
+        } else if (tbuf[0] != '\0') {
+            snprintf(gbuf, sizeof(gbuf), "%s", tbuf + 3);
         }
         OSDTextColored(ColSystem(), gbuf);
         if (g_config.osd_show_gpu_power && hw.gpu_power_w > 0) {
@@ -2102,17 +2162,28 @@ static void DrawModernBarOSD(float scale, double ft_ms) {
         has_prev = true;
     }
 
-    // Module 3: CPU
-    if ((g_config.osd_show_cpu_usage && hw.cpu_usage_pct >= 0) || (g_config.osd_show_cpu_clock && hw.cpu_clock_mhz > 0)) {
+    // Module 3: VRAM
+    if (g_config.osd_show_vram && hw.vram_used_mb >= 0) {
         if (has_prev) DrawBarDivider(scale);
-        DrawBadge("CPU", IM_COL32(33, 140, 250, 230), IM_COL32(255, 255, 255, 255), scale);
+        char vbuf[32];
+        snprintf(vbuf, sizeof(vbuf), "VRAM %.1fG", hw.vram_used_mb / 1024.0);
+        OSDTextColored(ColSystem(), vbuf);
+        has_prev = true;
+    }
+
+    // Module 4: CPU
+    if ((g_config.osd_show_cpu_usage && hw.cpu_usage_pct >= 0) || (g_config.osd_show_cpu_clock && (hw.cpu_clock_mhz > 0 || hw.cpu_clock_p_mhz > 0))) {
+        if (has_prev) DrawBarDivider(scale);
+        DrawBadge("CPU", BADGE_CPU, scale);
         char cbuf[64];
-        if (hw.cpu_usage_pct >= 0 && hw.cpu_clock_mhz > 0) {
+        if (hw.cpu_is_hybrid && hw.cpu_clock_p_mhz > 0 && hw.cpu_clock_e_mhz > 0) {
+            snprintf(cbuf, sizeof(cbuf), "%d%% · P%.1fG/E%.1fG", hw.cpu_usage_pct, hw.cpu_clock_p_mhz / 1000.0, hw.cpu_clock_e_mhz / 1000.0);
+        } else if (hw.cpu_usage_pct >= 0 && hw.cpu_clock_mhz > 0) {
             snprintf(cbuf, sizeof(cbuf), "%d%% · %.1fG", hw.cpu_usage_pct, hw.cpu_clock_mhz / 1000.0);
         } else if (hw.cpu_usage_pct >= 0) {
             snprintf(cbuf, sizeof(cbuf), "%d%%", hw.cpu_usage_pct);
         } else {
-            snprintf(cbuf, sizeof(cbuf), "%d MHz", hw.cpu_clock_mhz);
+            snprintf(cbuf, sizeof(cbuf), "%.1f GHz", hw.cpu_clock_mhz / 1000.0);
         }
         OSDTextColored(ColSystem(), cbuf);
         if (g_config.osd_show_cpu_power && hw.cpu_power_w > 0) {
@@ -2124,7 +2195,7 @@ static void DrawModernBarOSD(float scale, double ft_ms) {
         has_prev = true;
     }
 
-    // Module 4: RAM
+    // Module 5: RAM
     if (g_config.osd_show_ram && hw.ram_used_mb >= 0) {
         if (has_prev) DrawBarDivider(scale);
         char rbuf[32];
@@ -2133,7 +2204,7 @@ static void DrawModernBarOSD(float scale, double ft_ms) {
         has_prev = true;
     }
 
-    // Module 5: PQI
+    // Module 6: PQI
     if (g_config.osd_show_pqi) {
         if (has_prev) DrawBarDivider(scale);
         PQIScores pqi = PQI_GetRolling();
@@ -2143,15 +2214,15 @@ static void DrawModernBarOSD(float scale, double ft_ms) {
         has_prev = true;
     }
 
-    // Module 6: Bottleneck
+    // Module 7: Bottleneck
     if (g_config.osd_show_bottleneck) {
         if (has_prev) DrawBarDivider(scale);
         BottleneckKind bkind = g_bottleneck_kind.load(std::memory_order_relaxed);
         const char* bstr = (bkind == BottleneckKind::GpuBound) ? "GPU"
                          : ((bkind == BottleneckKind::CpuBound) ? "CPU" : "OK");
-        ImU32 bcol = (bkind == BottleneckKind::GpuBound) ? IM_COL32(230, 81, 0, 220)
-                   : ((bkind == BottleneckKind::CpuBound) ? IM_COL32(2, 119, 189, 220) : IM_COL32(110, 110, 110, 200));
-        DrawBadge(bstr, bcol, IM_COL32(255, 255, 255, 255), scale);
+        ImU32 bcol = (bkind == BottleneckKind::GpuBound) ? BADGE_GPU
+                   : ((bkind == BottleneckKind::CpuBound) ? BADGE_CPU : BADGE_API);
+        DrawBadge(bstr, bcol, scale);
     }
 }
 
@@ -2272,9 +2343,9 @@ static void DrawClassicOSD(float scale, double ft_ms) {
             snprintf(buf, sizeof(buf), TR("Smoothness: %.2f ms", "平滑度: %.2f ms"), smooth / 1000.0);
             ImVec4 col;
             float b = g_config.osd_text_brightness;
-            if (smooth < 500.0)       col = ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f);
-            else if (smooth < 1500.0) col = ImVec4(0.9f*b, 0.9f*b, 0.2f*b, 1.0f);
-            else                      col = ImVec4(0.9f*b, 0.2f*b, 0.2f*b, 1.0f);
+            if (smooth < 500.0)       col = ImVec4(0.35f*b, 0.82f*b, 0.55f*b, 1.0f);
+            else if (smooth < 1500.0) col = ImVec4(0.95f*b, 0.75f*b, 0.25f*b, 1.0f);
+            else                      col = ImVec4(0.95f*b, 0.35f*b, 0.35f*b, 1.0f);
             OSDTextColored(col, buf);
         }
     }
@@ -2310,8 +2381,8 @@ static void DrawClassicOSD(float scale, double ft_ms) {
                      offset, pct, p99 / 1000.0, mode);
             float b = g_config.osd_text_brightness;
             ImVec4 col = (offset < 100.0)
-                ? ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f)
-                : ImVec4(0.9f*b, 0.9f*b, 0.2f*b, 1.0f);
+                ? ImVec4(0.35f*b, 0.82f*b, 0.55f*b, 1.0f)
+                : ImVec4(0.95f*b, 0.75f*b, 0.25f*b, 1.0f);
             OSDTextColored(col, buf);
         }
     }
@@ -2328,10 +2399,10 @@ static void DrawClassicOSD(float scale, double ft_ms) {
         snprintf(buf, sizeof(buf), TR("Bottleneck: %s", "硬件瓶颈: %s"), bstr);
         float b = g_config.osd_text_brightness;
         ImVec4 bcol = (bkind == BottleneckKind::GpuBound)
-            ? ImVec4(0.95f*b, 0.45f*b, 0.2f*b, 1.0f)
+            ? ImVec4(0.95f*b, 0.35f*b, 0.35f*b, 1.0f)
             : ((bkind == BottleneckKind::CpuBound)
-                ? ImVec4(0.3f*b, 0.75f*b, 1.0f*b, 1.0f)
-                : ImVec4(0.7f*b, 0.7f*b, 0.7f*b, 1.0f));
+                ? ImVec4(0.35f*b, 0.65f*b, 0.95f*b, 1.0f)
+                : ImVec4(0.70f*b, 0.75f*b, 0.80f*b, 1.0f));
         OSDTextColored(bcol, buf);
     }
 
@@ -2396,15 +2467,22 @@ static void DrawClassicOSD(float scale, double ft_ms) {
                 snprintf(buf, sizeof(buf), TR("GPU: %d C (Hot: %d C)",
                                              "显卡温度: %d C (热点: %d C)"),
                          hw.gpu_temp_c, hw.gpu_temp_hotspot_c);
+            } else if (hw.gpu_temp_mem_c >= 0) {
+                snprintf(buf, sizeof(buf), TR("GPU: %d C (VRAM: %d C)",
+                                             "显卡温度: %d C (显存: %d C)"),
+                         hw.gpu_temp_c, hw.gpu_temp_mem_c);
             } else {
                 snprintf(buf, sizeof(buf), TR("GPU Temp: %d C", "显卡温度: %d C"), hw.gpu_temp_c);
             }
-            int max_temp = (std::max)(hw.gpu_temp_c, hw.gpu_temp_hotspot_c);
+            int max_temp = hw.gpu_temp_c;
+            if (hw.gpu_temp_hotspot_c > max_temp) max_temp = hw.gpu_temp_hotspot_c;
+            if (hw.gpu_temp_mem_c > max_temp) max_temp = hw.gpu_temp_mem_c;
+
             ImVec4 col;
             float b = g_config.osd_text_brightness;
-            if (max_temp < 75)       col = ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f);
-            else if (max_temp < 90)  col = ImVec4(0.9f*b, 0.9f*b, 0.2f*b, 1.0f);
-            else                     col = ImVec4(0.9f*b, 0.2f*b, 0.2f*b, 1.0f);
+            if (max_temp < 75)       col = ImVec4(0.88f*b, 0.90f*b, 0.92f*b, 1.0f);
+            else if (max_temp < 90)  col = ImVec4(0.95f*b, 0.75f*b, 0.25f*b, 1.0f);
+            else                     col = ImVec4(0.95f*b, 0.35f*b, 0.35f*b, 1.0f);
             OSDTextColored(col, buf);
         }
 
@@ -2437,11 +2515,11 @@ static void DrawClassicOSD(float scale, double ft_ms) {
             float b = g_config.osd_text_brightness;
             ImVec4 col;
             if (usage > 0.90f)
-                col = ImVec4(1.0f*b, 0.3f*b, 0.3f*b, 1.0f);
+                col = ImVec4(0.95f*b, 0.35f*b, 0.35f*b, 1.0f);
             else if (usage > 0.75f)
-                col = ImVec4(1.0f*b, 0.85f*b, 0.0f*b, 1.0f);
+                col = ImVec4(0.95f*b, 0.75f*b, 0.25f*b, 1.0f);
             else
-                col = ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f);
+                col = ImVec4(0.88f*b, 0.90f*b, 0.92f*b, 1.0f);
             OSDTextColored(col, buf);
         }
 
@@ -2451,10 +2529,17 @@ static void DrawClassicOSD(float scale, double ft_ms) {
             OSDTextColored(ColSystem(), buf);
         }
 
-        if (g_config.osd_show_cpu_clock && hw.cpu_clock_mhz > 0) {
-            char buf[32];
-            snprintf(buf, sizeof(buf), TR("CPU Clock: %d MHz", "CPU 频率: %d MHz"), hw.cpu_clock_mhz);
-            OSDTextColored(ColSystem(), buf);
+        if (g_config.osd_show_cpu_clock) {
+            char buf[64] = "";
+            if (hw.cpu_is_hybrid && hw.cpu_clock_p_mhz > 0 && hw.cpu_clock_e_mhz > 0) {
+                snprintf(buf, sizeof(buf), TR("CPU Clock: P: %d MHz  E: %d MHz", "CPU 频率: 大核 %d MHz  小核 %d MHz"),
+                         hw.cpu_clock_p_mhz, hw.cpu_clock_e_mhz);
+            } else if (hw.cpu_clock_mhz > 0) {
+                snprintf(buf, sizeof(buf), TR("CPU Clock: %d MHz", "CPU 频率: %d MHz"), hw.cpu_clock_mhz);
+            }
+            if (buf[0] != '\0') {
+                OSDTextColored(ColSystem(), buf);
+            }
         }
 
         if (g_config.osd_show_cpu_power && hw.cpu_power_w > 0) {
@@ -2763,10 +2848,12 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
     float rounding = is_modern ? (g_config.osd_rounding * g_config.osd_scale) : 0.0f;
     float border_sz = is_modern ? 1.0f : 0.0f;
     ImVec2 padding = is_modern ? ImVec2(10.0f * g_config.osd_scale, 8.0f * g_config.osd_scale) : ImVec2(8.0f * g_config.osd_scale, 6.0f * g_config.osd_scale);
+    ImVec2 spacing = is_modern ? ImVec2(6.0f * g_config.osd_scale, 4.0f * g_config.osd_scale) : ImVec2(8.0f * g_config.osd_scale, 3.0f * g_config.osd_scale);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, rounding);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, border_sz);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, padding);
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.35f, 0.45f, 0.55f, 0.45f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, spacing);
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.24f, 0.32f, 0.40f, 0.55f));
 
     ImGui::SetNextWindowPos({px_x, px_y}, ImGuiCond_Always, {pivot_x, pivot_y});
     ImGui::SetNextWindowBgAlpha(g_config.osd_opacity);
@@ -2907,7 +2994,7 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
     }
     ImGui::End();
     ImGui::PopStyleColor();
-    ImGui::PopStyleVar(3);
+    ImGui::PopStyleVar(4);
 }
 
 void RegisterOSD() {

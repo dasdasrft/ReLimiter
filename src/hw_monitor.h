@@ -23,7 +23,10 @@ struct HWMonitorData {
 
     // CPU (Win32)
     int   cpu_usage_pct     = -1;   // 0–100% (system-wide)
-    int   cpu_clock_mhz     = -1;   // Current effective MHz (approximate)
+    int   cpu_clock_mhz     = -1;   // Overall / Peak core MHz
+    int   cpu_clock_p_mhz   = -1;   // P-Core (大核) peak MHz
+    int   cpu_clock_e_mhz   = -1;   // E-Core (小核) peak MHz
+    bool  cpu_is_hybrid     = false;// True if CPU has P-cores + E-cores
     int   cpu_power_w       = -1;   // CPU package power draw in watts
 
     // RAM (Win32)

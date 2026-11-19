@@ -22,19 +22,80 @@ typedef PDH_STATUS (WINAPI *PFN_PdhAddEnglishCounterA)(PDH_HQUERY, LPCSTR, DWORD
 typedef PDH_STATUS (WINAPI *PFN_PdhCollectQueryData)(PDH_HQUERY);
 typedef PDH_STATUS (WINAPI *PFN_PdhGetFormattedCounterValue)(PDH_HCOUNTER, DWORD, LPDWORD, PPDH_FMT_COUNTERVALUE);
 typedef PDH_STATUS (WINAPI *PFN_PdhCloseQuery)(PDH_HQUERY);
+typedef PDH_STATUS (WINAPI *PFN_PdhGetFormattedCounterArrayA)(PDH_HCOUNTER, DWORD, LPDWORD, LPDWORD, PPDH_FMT_COUNTERVALUE_ITEM_A);
 
 static HMODULE s_pdh_mod = nullptr;
 static PFN_PdhOpenQueryA s_PdhOpenQueryA = nullptr;
 static PFN_PdhAddEnglishCounterA s_PdhAddEnglishCounterA = nullptr;
 static PFN_PdhCollectQueryData s_PdhCollectQueryData = nullptr;
 static PFN_PdhGetFormattedCounterValue s_PdhGetFormattedCounterValue = nullptr;
+static PFN_PdhGetFormattedCounterArrayA s_PdhGetFormattedCounterArrayA = nullptr;
 static PFN_PdhCloseQuery s_PdhCloseQuery = nullptr;
 
 static PDH_HQUERY s_pdh_query = nullptr;
 static PDH_HCOUNTER s_pdh_cpu_power = nullptr;
 static PDH_HCOUNTER s_pdh_cpu_perf_pct = nullptr;
+static PDH_HCOUNTER s_pdh_cpu_perf_wildcard = nullptr;
 static PDH_HCOUNTER s_pdh_cpu_freq_base = nullptr;
 static bool s_pdh_initialized = false;
+
+// ── Hybrid CPU Core Topology (P-Core / E-Core Detection) ──
+struct CoreTopology {
+    bool has_hybrid = false;
+    uint64_t p_core_mask = 0;
+    uint64_t e_core_mask = 0;
+    int p_core_count = 0;
+    int e_core_count = 0;
+};
+static CoreTopology s_cpu_topology = {};
+
+static void InitHybridTopology() {
+    s_cpu_topology = {};
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len);
+    if (len == 0) return;
+
+    std::vector<uint8_t> buf(len);
+    if (GetLogicalProcessorInformationEx(RelationProcessorCore, reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buf.data()), &len)) {
+        DWORD offset = 0;
+        int max_eff = 0;
+        while (offset < len) {
+            auto* info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buf.data() + offset);
+            if (info->Relationship == RelationProcessorCore) {
+                int eff = info->Processor.EfficiencyClass;
+                if (eff > max_eff) max_eff = eff;
+            }
+            offset += info->Size;
+        }
+
+        if (max_eff > 0) {
+            // Heterogeneous hybrid CPU detected (e.g. Intel Alder/Raptor Lake or AMD Zen4/Zen4c)
+            s_cpu_topology.has_hybrid = true;
+            offset = 0;
+            while (offset < len) {
+                auto* info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buf.data() + offset);
+                if (info->Relationship == RelationProcessorCore) {
+                    int eff = info->Processor.EfficiencyClass;
+                    uint64_t mask = 0;
+                    if (info->Processor.GroupCount > 0) {
+                        mask = static_cast<uint64_t>(info->Processor.GroupMask[0].Mask);
+                    }
+                    if (eff == max_eff) {
+                        s_cpu_topology.p_core_mask |= mask;
+                        s_cpu_topology.p_core_count++;
+                    } else {
+                        s_cpu_topology.e_core_mask |= mask;
+                        s_cpu_topology.e_core_count++;
+                    }
+                }
+                offset += info->Size;
+            }
+            LOG_INFO("HWMonitor: Hybrid CPU topology detected: %d P-Cores (mask 0x%llX), %d E-Cores (mask 0x%llX)",
+                     s_cpu_topology.p_core_count, (unsigned long long)s_cpu_topology.p_core_mask,
+                     s_cpu_topology.e_core_count, (unsigned long long)s_cpu_topology.e_core_mask);
+        }
+    }
+}
 
 static void InitPDH() {
     if (s_pdh_initialized) return;
@@ -47,6 +108,7 @@ static void InitPDH() {
     s_PdhAddEnglishCounterA = (PFN_PdhAddEnglishCounterA)GetProcAddress(s_pdh_mod, "PdhAddEnglishCounterA");
     s_PdhCollectQueryData = (PFN_PdhCollectQueryData)GetProcAddress(s_pdh_mod, "PdhCollectQueryData");
     s_PdhGetFormattedCounterValue = (PFN_PdhGetFormattedCounterValue)GetProcAddress(s_pdh_mod, "PdhGetFormattedCounterValue");
+    s_PdhGetFormattedCounterArrayA = (PFN_PdhGetFormattedCounterArrayA)GetProcAddress(s_pdh_mod, "PdhGetFormattedCounterArrayA");
     s_PdhCloseQuery = (PFN_PdhCloseQuery)GetProcAddress(s_pdh_mod, "PdhCloseQuery");
 
     if (!s_PdhOpenQueryA || !s_PdhAddEnglishCounterA || !s_PdhCollectQueryData ||
@@ -68,7 +130,8 @@ static void InitPDH() {
         }
 
         // Processor performance counters for effective frequency calculation:
-        // effective_mhz = base_frequency * (%_processor_performance / 100.0)
+        // Query per-core wildcard (*) to accurately capture P-core turbo vs E-core frequency
+        s_PdhAddEnglishCounterA(s_pdh_query, "\\Processor Information(*)\\% Processor Performance", 0, &s_pdh_cpu_perf_wildcard);
         s_PdhAddEnglishCounterA(s_pdh_query, "\\Processor Information(_Total)\\% Processor Performance", 0, &s_pdh_cpu_perf_pct);
         s_PdhAddEnglishCounterA(s_pdh_query, "\\Processor Information(_Total)\\Processor Frequency", 0, &s_pdh_cpu_freq_base);
 
@@ -83,6 +146,7 @@ static void ShutdownPDH() {
     }
     s_pdh_cpu_power = nullptr;
     s_pdh_cpu_perf_pct = nullptr;
+    s_pdh_cpu_perf_wildcard = nullptr;
     s_pdh_cpu_freq_base = nullptr;
     if (s_pdh_mod) {
         FreeLibrary(s_pdh_mod);
@@ -377,8 +441,68 @@ static void PollCPU(HWMonitorData& d) {
                 }
             }
 
-            // CPU Effective Frequency
-            if (s_pdh_cpu_perf_pct && s_pdh_cpu_freq_base && s_PdhGetFormattedCounterValue) {
+            // CPU Effective Frequency & Core Cluster Tracking
+            double base_mhz = 0.0;
+            if (s_pdh_cpu_freq_base && s_PdhGetFormattedCounterValue) {
+                PDH_FMT_COUNTERVALUE val_base = {};
+                if (s_PdhGetFormattedCounterValue(s_pdh_cpu_freq_base, PDH_FMT_DOUBLE, nullptr, &val_base) == ERROR_SUCCESS &&
+                    (val_base.CStatus == PDH_CSTATUS_VALID_DATA || val_base.CStatus == PDH_CSTATUS_NEW_DATA)) {
+                    base_mhz = val_base.doubleValue;
+                }
+            }
+
+            if (base_mhz > 0.0 && s_pdh_cpu_perf_wildcard && s_PdhGetFormattedCounterArrayA) {
+                DWORD buf_size = 0;
+                DWORD item_count = 0;
+                PDH_STATUS st = s_PdhGetFormattedCounterArrayA(s_pdh_cpu_perf_wildcard, PDH_FMT_DOUBLE, &buf_size, &item_count, nullptr);
+                if (st == PDH_MORE_DATA && buf_size > 0) {
+                    std::vector<uint8_t> item_buf(buf_size);
+                    auto* items = reinterpret_cast<PPDH_FMT_COUNTERVALUE_ITEM_A>(item_buf.data());
+                    if (s_PdhGetFormattedCounterArrayA(s_pdh_cpu_perf_wildcard, PDH_FMT_DOUBLE, &buf_size, &item_count, items) == ERROR_SUCCESS) {
+                        double max_pct_overall = 0.0;
+                        double max_pct_p = 0.0;
+                        double max_pct_e = 0.0;
+
+                        for (DWORD i = 0; i < item_count; i++) {
+                            if (!items[i].szName) continue;
+                            if (strstr(items[i].szName, "Total") || strstr(items[i].szName, "total"))
+                                continue;
+
+                            if (items[i].FmtValue.CStatus == PDH_CSTATUS_VALID_DATA ||
+                                items[i].FmtValue.CStatus == PDH_CSTATUS_NEW_DATA) {
+                                double pct = items[i].FmtValue.doubleValue;
+                                if (pct > max_pct_overall) max_pct_overall = pct;
+
+                                const char* comma = strchr(items[i].szName, ',');
+                                int logical_idx = comma ? atoi(comma + 1) : atoi(items[i].szName);
+
+                                if (s_cpu_topology.has_hybrid) {
+                                    uint64_t bit = 1ULL << (logical_idx < 64 ? logical_idx : 0);
+                                    if (s_cpu_topology.p_core_mask & bit) {
+                                        if (pct > max_pct_p) max_pct_p = pct;
+                                    } else if (s_cpu_topology.e_core_mask & bit) {
+                                        if (pct > max_pct_e) max_pct_e = pct;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (max_pct_overall > 0.0) {
+                            d.cpu_clock_mhz = static_cast<int>(base_mhz * (max_pct_overall / 100.0) + 0.5);
+                        }
+                        if (s_cpu_topology.has_hybrid) {
+                            d.cpu_is_hybrid = true;
+                            if (max_pct_p > 0.0)
+                                d.cpu_clock_p_mhz = static_cast<int>(base_mhz * (max_pct_p / 100.0) + 0.5);
+                            if (max_pct_e > 0.0)
+                                d.cpu_clock_e_mhz = static_cast<int>(base_mhz * (max_pct_e / 100.0) + 0.5);
+                        }
+                    }
+                }
+            }
+
+            // Fallback to average performance if per-core wildcard was unavailable
+            if (d.cpu_clock_mhz <= 0 && s_pdh_cpu_perf_pct && s_pdh_cpu_freq_base && s_PdhGetFormattedCounterValue) {
                 PDH_FMT_COUNTERVALUE val_pct = {}, val_base = {};
                 if (s_PdhGetFormattedCounterValue(s_pdh_cpu_perf_pct, PDH_FMT_DOUBLE, nullptr, &val_pct) == ERROR_SUCCESS &&
                     s_PdhGetFormattedCounterValue(s_pdh_cpu_freq_base, PDH_FMT_DOUBLE, nullptr, &val_base) == ERROR_SUCCESS) {
@@ -461,6 +585,7 @@ static void PollThreadProc() {
 // ── Public API ──
 
 void HWMonitor_Init() {
+    InitHybridTopology();
     s_adl_available = InitADL();
 
     // Do one synchronous poll so data is available immediately
