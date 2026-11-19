@@ -42,6 +42,15 @@ if(MSVC)
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
+## ── AMD ADL Telemetry test ──
+add_executable(test_adl test_adl.cpp)
+target_compile_features(test_adl PRIVATE cxx_std_17)
+
+if(MSVC)
+    set_property(TARGET test_adl PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 enable_testing()
 add_test(NAME dmfg_detection_properties COMMAND test_dmfg_detection)
 add_test(NAME scheduler_passthrough COMMAND test_scheduler_passthrough)

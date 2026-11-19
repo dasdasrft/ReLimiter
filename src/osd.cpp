@@ -5,10 +5,8 @@
 #include "fg_divisor.h"
 #include "display_state.h"
 #include "marker_log.h"
-#include "nvapi_types.h"
 #include "correlator.h"
 #include "stress_detector.h"
-#include "streamline_hooks.h"
 #include "wake_guard.h"
 #include "pqi.h"
 #include "csv_writer.h"
@@ -16,19 +14,14 @@
 #include "swapchain_manager.h"
 #include "enforcement_dispatcher.h"
 #include "loadlib_hooks.h"
-#include "pcl_hooks.h"
-#include "nvapi_hooks.h"
 #include "vsync_control.h"
 #include "health.h"
-#include "reflex_inject.h"
 #include "presentation_gate.h"
 #include "flip_model.h"
 #include "adaptive_smoothing.h"
 #include "vk_enforce.h"
 #include "hw_monitor.h"
 #include "feedback.h"
-#include "ngx_hooks.h"
-#include "dlss_presets.h"
 #include "blackout.h"
 #include "focus_lock.h"
 #include "localization.h"
@@ -179,43 +172,34 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
     }
 
     // ════════════════════════════════════════════
-    // SECTION 1: FPS
+    // SECTION 1: FPS (AMD Radeon Edition)
     // ════════════════════════════════════════════
-    // Use a static so the slider value persists across frames while
-    // the user is dragging or typing. Only sync from the atomic when
-    // the widget is idle, preventing snap-back during interaction.
+    ImGui::TextColored(ImVec4(0.9f, 0.2f, 0.2f, 1.0f), "ReLimiter (AMD Radeon Edition / AMD 专用版)");
+    ImGui::Spacing();
+
     static int s_target_edit = g_user_target_fps.load(std::memory_order_relaxed);
     static bool s_target_active = false;
     if (!s_target_active)
         s_target_edit = g_user_target_fps.load(std::memory_order_relaxed);
     int target = s_target_edit;
 
-    // Compute Reflex VRR cap: fps = hz - hz^2/3600, floored
+    // Compute FreeSync / VRR cap: fps = hz - hz^2/3600, floored
     double ceiling_hz = g_ceiling_hz.load(std::memory_order_relaxed);
-    int reflex_cap = 0;
+    int freesync_cap = 0;
     if (ceiling_hz > 1.0)
-        reflex_cap = static_cast<int>(ceiling_hz - (ceiling_hz * ceiling_hz / 3600.0));
+        freesync_cap = static_cast<int>(ceiling_hz - (ceiling_hz * ceiling_hz / 3600.0));
 
-    // Check for Dynamic DMFG early — affects all FPS controls
-    bool dmfg_dynamic_active = false;
-    {
-        DLSSPresets p_drs = DLSSPresets_Get();
-        if (p_drs.available && p_drs.mfg_mode_override == 4)
-            dmfg_dynamic_active = true;
-    }
-
-    if (dmfg_dynamic_active) ImGui::BeginDisabled();
-    if (ImGui::RadioButton(TR("VRR Cap", "VRR 自动限帧"), reflex_cap > 0 && target == reflex_cap)) {
-        if (reflex_cap > 0) {
-            g_user_target_fps.store(reflex_cap, std::memory_order_relaxed);
-            g_config.target_fps = reflex_cap;
-            s_target_edit = reflex_cap;
+    if (ImGui::RadioButton(TR("FreeSync Cap", "FreeSync/VRR 自动限帧"), freesync_cap > 0 && target == freesync_cap)) {
+        if (freesync_cap > 0) {
+            g_user_target_fps.store(freesync_cap, std::memory_order_relaxed);
+            g_config.target_fps = freesync_cap;
+            s_target_edit = freesync_cap;
             config_dirty = true;
         }
     }
     ImGui::SameLine();
-    if (ImGui::RadioButton(TR("Custom", "自定义"), target > 0 && target != reflex_cap)) {
-        if (target == 0 || target == reflex_cap) {
+    if (ImGui::RadioButton(TR("Custom", "自定义"), target > 0 && target != freesync_cap)) {
+        if (target == 0 || target == freesync_cap) {
             target = 60;
             g_user_target_fps.store(target, std::memory_order_relaxed);
             g_config.target_fps = target;
@@ -230,88 +214,45 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         s_target_edit = 0;
         config_dirty = true;
     }
-    if (dmfg_dynamic_active) ImGui::EndDisabled();
-    if (reflex_cap > 0) {
+    if (freesync_cap > 0) {
         char tip[256];
         snprintf(tip, sizeof(tip),
-                 TR("VRR Cap sets your FPS to the Reflex-safe maximum for your display (hz - hz^2/3600). For your monitor that's %d fps.",
-                    "VRR 自动限帧：根据显示器刷新率自动计算防撕裂上限 (刷新率 - 刷新率^2/3600)。当前显示器推荐值为 %d fps。"), reflex_cap);
+                 TR("FreeSync Cap sets your FPS to the safe maximum for your display (hz - hz^2/3600). For your monitor that's %d fps.",
+                    "FreeSync/VRR 自动限帧：根据显示器刷新率自动计算防撕裂上限 (刷新率 - 刷新率^2/3600)。当前显示器推荐值为 %d fps。"), freesync_cap);
         HelpTip(tip);
     } else {
-        HelpTip(TR("VRR Cap sets your FPS to the Reflex-safe maximum for your display. Display not detected yet.",
-                   "VRR 自动限帧：根据显示器刷新率自动计算防撕裂上限。尚未检测到显示器。"));
+        HelpTip(TR("FreeSync Cap sets your FPS to the safe maximum for your display. Display not detected yet.",
+                    "FreeSync/VRR 自动限帧：根据显示器刷新率自动计算防撕裂上限。尚未检测到显示器。"));
     }
 
     char slider_fmt[32];
-
-    if (dmfg_dynamic_active) {
-        // Dynamic DMFG: show driver target, slider disabled
-        DLSSPresets p_drs_fps = DLSSPresets_Get();
-        int drs_target = p_drs_fps.mfg_dynamic_target_fps;
-
-        // Resolve display value
-        int display_target = 0;
-        if (drs_target == 0x01000000)
-            display_target = reflex_cap > 0 ? reflex_cap : static_cast<int>(ceiling_hz);
-        else if (drs_target > 0)
-            display_target = drs_target;
-
-        s_target_edit = display_target;
-        g_user_target_fps.store(0, std::memory_order_relaxed);
-        ImGui::BeginDisabled();
-        char dmfg_fmt[32];
-        if (display_target == 0)
-            snprintf(dmfg_fmt, sizeof(dmfg_fmt), "%s", TR("Not set", "未设置"));
-        else
-            snprintf(dmfg_fmt, sizeof(dmfg_fmt), "%%d");
-        ImGui::SliderInt(TR("Target FPS", "目标帧率"), &s_target_edit, 0, 500, dmfg_fmt);
-        ImGui::EndDisabled();
-        s_target_active = false;
-
-        if (drs_target == 0x01000000)
-            ImGui::TextColored(ImVec4(0.6f, 0.9f, 0.6f, 1.0f),
-                TR("Dynamic MFG target: Max Refresh Rate (%d fps)", "动态 MFG 目标: 最高刷新率 (%d fps)"), display_target);
-        else if (drs_target > 0)
-            ImGui::TextColored(ImVec4(0.6f, 0.9f, 0.6f, 1.0f),
-                TR("Dynamic MFG target: %d fps", "动态 MFG 目标: %d fps"), drs_target);
-        else
-            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f),
-                TR("No target set. Set via RHI, NVIDIA App, or Profile Inspector.",
-                   "未设置目标。请在 RHI、NVIDIA App 或 Profile Inspector 中配置。"));
-    } else {
-        if (s_target_edit == 0)
-            snprintf(slider_fmt, sizeof(slider_fmt), "%s", TR("Off", "关闭"));
-        else if (s_target_edit == reflex_cap && reflex_cap > 0)
-            snprintf(slider_fmt, sizeof(slider_fmt), "%s", TR("%d (VRR)", "%d (VRR 限帧)"));
-        else
-            snprintf(slider_fmt, sizeof(slider_fmt), "%%d");
-        ImGui::SliderInt(TR("Target FPS", "目标帧率"), &s_target_edit, 0, 360, slider_fmt);
-        s_target_active = ImGui::IsItemActive();
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-            if (s_target_edit > 0 && s_target_edit < 30) s_target_edit = 30;
-            g_user_target_fps.store(s_target_edit, std::memory_order_relaxed);
-            g_config.target_fps = s_target_edit;
-            config_dirty = true;
-        }
-    }
-    if (dmfg_dynamic_active)
-        HelpTip(TR("Dynamic MFG is active. The FPS target is controlled by the driver profile. Set it via RHI, NVIDIA App, or Profile Inspector before launching the game.",
-                   "动态 MFG 已激活。目标帧率受驱动程序配置文件控制。请在启动游戏前通过 RHI、NVIDIA App 或 Profile Inspector 设置。"));
+    if (s_target_edit == 0)
+        snprintf(slider_fmt, sizeof(slider_fmt), "%s", TR("Off", "关闭"));
+    else if (s_target_edit == freesync_cap && freesync_cap > 0)
+        snprintf(slider_fmt, sizeof(slider_fmt), "%s", TR("%d (FreeSync)", "%d (FreeSync 限帧)"));
     else
-        HelpTip(TR("The FPS the limiter will target. 0 = no limiting. Minimum is 30.",
-                   "帧率限制器的目标 FPS。0 为不限帧，最低限制为 30。"));
+        snprintf(slider_fmt, sizeof(slider_fmt), "%%d");
 
-    if (!dmfg_dynamic_active) {
-        for (int p : {30, 60, 120, 240}) {
-            ImGui::SameLine();
-            char label[8];
-            snprintf(label, sizeof(label), "%d", p);
-            if (ImGui::Button(label)) {
-                g_user_target_fps.store(p, std::memory_order_relaxed);
-                g_config.target_fps = p;
-                s_target_edit = p;
-                config_dirty = true;
-            }
+    ImGui::SliderInt(TR("Target FPS", "目标帧率"), &s_target_edit, 0, 360, slider_fmt);
+    s_target_active = ImGui::IsItemActive();
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        if (s_target_edit > 0 && s_target_edit < 30) s_target_edit = 30;
+        g_user_target_fps.store(s_target_edit, std::memory_order_relaxed);
+        g_config.target_fps = s_target_edit;
+        config_dirty = true;
+    }
+    HelpTip(TR("The FPS the limiter will target. 0 = no limiting. Minimum is 30.",
+               "帧率限制器的目标 FPS。0 为不限帧，最低限制为 30。"));
+
+    for (int p : {30, 60, 120, 240}) {
+        ImGui::SameLine();
+        char label[8];
+        snprintf(label, sizeof(label), "%d", p);
+        if (ImGui::Button(label)) {
+            g_user_target_fps.store(p, std::memory_order_relaxed);
+            g_config.target_fps = p;
+            s_target_edit = p;
+            config_dirty = true;
         }
     }
 
@@ -335,29 +276,6 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
     }
     HelpTip(TR("FPS cap when the game window loses focus. 0 = uncapped. Minimum is 20.",
                "当游戏窗口失去焦点（切到后台）时的帧率限制。0 为不限帧，最低为 20。"));
-
-    ImGui::Spacing();
-#ifdef _WIN64
-    static int s_fgoff_edit = g_fg_off_fps.load(std::memory_order_relaxed);
-    static bool s_fgoff_active = false;
-    if (!s_fgoff_active)
-        s_fgoff_edit = g_fg_off_fps.load(std::memory_order_relaxed);
-    char fgoff_fmt[32];
-    if (s_fgoff_edit == 0)
-        snprintf(fgoff_fmt, sizeof(fgoff_fmt), "%s", TR("Off", "关闭"));
-    else
-        snprintf(fgoff_fmt, sizeof(fgoff_fmt), "%%d");
-    ImGui::SliderInt(TR("FG-Off Cap", "关闭插帧时限帧"), &s_fgoff_edit, 0, 120, fgoff_fmt);
-    s_fgoff_active = ImGui::IsItemActive();
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-        if (s_fgoff_edit > 0 && s_fgoff_edit < 30) s_fgoff_edit = 30;
-        g_fg_off_fps.store(s_fgoff_edit, std::memory_order_relaxed);
-        g_config.fg_off_fps = s_fgoff_edit;
-        config_dirty = true;
-    }
-    HelpTip(TR("FPS cap when Frame Generation is disabled (menus, pauses). 0 = off. Prevents GPU ramp-up on uncapped non-FG frames.",
-               "当插帧功能关闭时（如菜单、暂停界面）的帧率限制。0 为关闭。防止菜单等无插帧场景显卡满载发热。"));
-#endif
 
     ImGui::Spacing();
     {
@@ -456,7 +374,7 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         }
         ImGui::SameLine();
         if (ImGui::Button(TR("Full", "全量"))) {
-            // Full: everything on
+            // Full: everything on (AMD Edition)
             OSDPreset p = {};
             p.show_fps = true;
             p.show_1pct_low = true;
@@ -466,7 +384,6 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
             p.show_cpu_latency = true;
             p.show_gpu_render_time = true;
             p.show_total_frame_cost = true;
-            p.show_fg_time = true;
             p.show_pqi = true;
             p.show_pqi_breakdown = true;
             p.show_smoothness = true;
@@ -480,11 +397,6 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
             p.show_vram = true;
             p.show_cpu_usage = true;
             p.show_ram = true;
-            p.show_dlss_quality = true;
-            p.show_dlss_features = true;
-            p.show_dlss_resolution = true;
-            p.show_dlss_presets = true;
-            p.show_dlss_versions = true;
             OSDPreset_ApplyTogglesOnly(p);
             config_dirty = true;
         }
@@ -653,15 +565,12 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
                     p.show_fps = true; p.show_1pct_low = true; p.show_0_1pct_low = true;
                     p.show_frametime = true; p.show_frametime_graph = true;
                     p.show_cpu_latency = true; p.show_gpu_render_time = true;
-                    p.show_total_frame_cost = true; p.show_fg_time = true;
+                    p.show_total_frame_cost = true;
                     p.show_pqi = true; p.show_pqi_breakdown = true;
                     p.show_smoothness = true; p.show_fg = true; p.show_limiter = true;
                     p.show_adaptive_smoothing = true; p.show_gpu_temp = true;
                     p.show_gpu_clock = true; p.show_gpu_usage = true; p.show_gpu_power = true; p.show_vram = true;
                     p.show_cpu_usage = true; p.show_ram = true;
-                    p.show_dlss_quality = true; p.show_dlss_features = true;
-                    p.show_dlss_resolution = true; p.show_dlss_presets = true;
-                    p.show_dlss_versions = true;
                     OSDPreset_ApplyTogglesOnly(p);
                 } else {
                     // User preset (idx - 3)
@@ -873,10 +782,7 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         HelpTip(TR("GPU active render time in ms. Shows actual GPU work excluding idle bubbles. (AMD/Intel/NVIDIA supported)", "GPU 纯活跃渲染耗时 (毫秒)。展示 GPU 纯渲染负载（支持 AMD/Intel/NVIDIA 显卡）。"));
         FlowSeparator();
         if (ImGui::Checkbox(TR("Frame Cost##osd_elem", "整帧总开销##osd_elem"), &g_config.osd_show_total_frame_cost)) config_dirty = true;
-        HelpTip(TR("Total frame cost: sim + render + GPU. The real cost of a frame before limiter sleep. DX12+Reflex only.", "整帧总耗时：模拟 + 提交 + 渲染。限帧器休眠前的实际帧开销。"));
-        FlowSeparator();
-        if (ImGui::Checkbox(TR("FG Time##osd_elem", "插帧计算耗时##osd_elem"), &g_config.osd_show_fg_time)) config_dirty = true;
-        HelpTip(TR("DLSS Frame Generation time. Only appears when FG is active. Shows the FG overhead per frame. DX12+Reflex only.", "DLSS 插帧计算耗时。仅在开启插帧时显示，展示每帧插帧所需开销。"));
+        HelpTip(TR("Total frame cost: sim + render + GPU. The real cost of a frame before limiter sleep.", "整帧总耗时：模拟 + 提交 + 渲染。限帧器休眠前的实际帧开销。"));
 #endif
 
         ImGui::Spacing();
@@ -898,51 +804,29 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         ImGui::Spacing();
         ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "%s", TR("Pipeline", "渲染管线"));
         if (ImGui::Checkbox(TR("Frame Generation##osd_elem", "插帧状态 (FG)##osd_elem"), &g_config.osd_show_fg)) config_dirty = true;
-        HelpTip(TR("Show FG mode and multiplier (DLSS FG, Dynamic MFG, Smooth Motion).", "显示插帧模式与倍率（如 DLSS FG、Dynamic MFG、AFMF/Smooth Motion）。"));
+        HelpTip(TR("Show FG mode (AFMF, Smooth Motion, etc.).", "显示插帧模式（如 AFMF、Smooth Motion 等）。"));
         FlowSeparator();
         if (ImGui::Checkbox(TR("Limiter / Tier##osd_elem", "限帧器/休眠等级##osd_elem"), &g_config.osd_show_limiter)) config_dirty = true;
         HelpTip(TR("Show how much time the limiter added and the current degradation tier (T0=full, T4=suspended).", "显示限帧器注入的等待时间以及当前的降级保护等级 (T0=全量, T4=暂停)。"));
 #endif
 
-        {
-        NGXDLSSInfo dlss_check = NGXHooks_GetInfo();
-        if (dlss_check.available) {
         ImGui::Spacing();
-        ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f), "DLSS");
-        if (ImGui::Checkbox(TR("Quality Level##osd_elem", "画质模式##osd_elem"), &g_config.osd_show_dlss_quality)) config_dirty = true;
-        HelpTip(TR("DLSS quality mode (DLAA/Quality/Balanced/Performance/Ultra Perf). Requires DLSS game.", "DLSS 画质模式 (DLAA/质量/平衡/性能/超性能)。"));
-        FlowSeparator();
-        if (ImGui::Checkbox(TR("Features##osd_elem", "特性状态##osd_elem"), &g_config.osd_show_dlss_features)) config_dirty = true;
-        HelpTip(TR("Active DLSS features: SR or RR (mutually exclusive) plus FG if active.", "当前启用的 DLSS 特性：SR 超分辨率或 RR 光线重建，以及 FG 插帧。"));
-        FlowSeparator();
-        if (ImGui::Checkbox(TR("Resolution##osd_elem", "渲染分辨率##osd_elem"), &g_config.osd_show_dlss_resolution)) config_dirty = true;
-        HelpTip(TR("DLSS render resolution and output resolution. Shows DRS resolution when active.", "DLSS 内部渲染分辨率与最终输出分辨率。"));
-        FlowSeparator();
-        if (ImGui::Checkbox(TR("Presets##osd_elem", "模型预设##osd_elem"), &g_config.osd_show_dlss_presets)) config_dirty = true;
-        HelpTip(TR("DLSS SR preset (game-set hint) and driver override presets for SR/RR/FG if active.", "DLSS 内部模型预设 (A-K) 及驱动层覆盖预设。"));
-        FlowSeparator();
-        if (ImGui::Checkbox(TR("Versions##osd_elem", "DLL 版本##osd_elem"), &g_config.osd_show_dlss_versions)) config_dirty = true;
-        HelpTip(TR("Show DLSS DLL versions (SR, RR, FG) and Streamline version if loaded.", "显示已加载的 DLSS (SR, RR, FG) 以及 Streamline DLL 版本。"));
-        }
-        }
-
-        ImGui::Spacing();
-        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%s", TR("System", "硬件监控 (AMD / Intel / NVIDIA)"));
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%s", TR("System (AMD Radeon & PC)", "硬件监控 (AMD Radeon & 系统)"));
         if (ImGui::Checkbox(TR("GPU Temp##osd_elem", "显卡温度##osd_elem"), &g_config.osd_show_gpu_temp)) config_dirty = true;
-        HelpTip(TR("GPU core, hotspot, and VRAM temperatures in Celsius. Color-coded: green < 75C, yellow < 90C, red above.",
-                   "显卡核心、热点（结温）及显存温度（摄氏度）。绿色 < 75°C，黄色 < 90°C，红色超过 90°C。"));
+        HelpTip(TR("GPU core, hotspot, and VRAM temperatures in Celsius (AMD ADL2 PMLog). Color-coded: green < 75C, yellow < 90C, red above.",
+                   "显卡核心、热点（结温）及显存温度（摄氏度，基于 AMD ADL2 PMLog）。绿色 < 75°C，黄色 < 90°C，红色超过 90°C。"));
         FlowSeparator();
         if (ImGui::Checkbox(TR("GPU Clock##osd_elem", "显卡频率##osd_elem"), &g_config.osd_show_gpu_clock)) config_dirty = true;
-        HelpTip(TR("GPU core and memory clock speeds in MHz.", "GPU 核心与显存实时运行频率 (MHz)。"));
+        HelpTip(TR("GPU core and memory clock speeds in MHz (AMD ADL2).", "GPU 核心与显存实时运行频率 (MHz，基于 AMD ADL2)。"));
         FlowSeparator();
         if (ImGui::Checkbox(TR("GPU Usage##osd_elem", "显卡占用##osd_elem"), &g_config.osd_show_gpu_usage)) config_dirty = true;
-        HelpTip(TR("GPU graphics engine utilization percentage.", "GPU 图形引擎实时使用率百分比。"));
+        HelpTip(TR("GPU graphics engine utilization percentage (AMD ADL2).", "GPU 图形引擎实时使用率百分比 (基于 AMD ADL2)。"));
         FlowSeparator();
         if (ImGui::Checkbox(TR("GPU Power##osd_elem", "显卡功耗##osd_elem"), &g_config.osd_show_gpu_power)) config_dirty = true;
-        HelpTip(TR("GPU board power draw in watts.", "GPU 整卡实时功耗 (W)。"));
+        HelpTip(TR("GPU board power draw in watts (AMD ADL2 PMLog).", "GPU 整卡实时功耗 (W，基于 AMD ADL2 PMLog)。"));
         FlowSeparator();
         if (ImGui::Checkbox(TR("VRAM##osd_elem", "显存占用##osd_elem"), &g_config.osd_show_vram)) config_dirty = true;
-        HelpTip(TR("Video memory usage (used / total).", "显存 (VRAM) 占用量与显存总量 (MB)。支持 AMD / Intel / NVIDIA。"));
+        HelpTip(TR("Video memory usage (used / total).", "显存 (VRAM) 占用量与显存总量 (MB)。支持 AMD Radeon。"));
         FlowSeparator();
         if (ImGui::Checkbox(TR("CPU Usage##osd_elem", "CPU 占用##osd_elem"), &g_config.osd_show_cpu_usage)) config_dirty = true;
         HelpTip(TR("System-wide CPU utilization percentage.", "系统级整体 CPU 负载使用率百分比。"));
@@ -1240,7 +1124,7 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
     // SECTION: Adaptive Smoothing (collapsible)
     // ════════════════════════════════════════════
     ActiveAPI active_api = SwapMgr_GetActiveAPI();
-    if ((active_api == ActiveAPI::DX12 || active_api == ActiveAPI::DX11 || active_api == ActiveAPI::Vulkan) && !dmfg_dynamic_active) {
+    if (active_api == ActiveAPI::DX12 || active_api == ActiveAPI::DX11 || active_api == ActiveAPI::Vulkan) {
     ImGui::Separator();
     if (ImGui::CollapsingHeader(TR("Adaptive Smoothing", "自适应平滑 (Adaptive Smoothing)"))) {
         bool adaptive = g_config.adaptive_smoothing;
@@ -1317,41 +1201,20 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
     } // DX12 only (Adaptive Smoothing)
 
     // ════════════════════════════════════════════
-    // SECTION: Frame Generation (collapsible, DX12 only)
-    // ════════════════════════════════════════════
     // SECTION 4: Advanced (collapsible)
     // ════════════════════════════════════════════
     ImGui::Separator();
     if (ImGui::CollapsingHeader(TR("Advanced", "高级选项"))) {
 #ifdef _WIN64
-        // Reflex Injection toggle
-        bool inject = g_config.reflex_inject;
-        if (ImGui::Checkbox(TR("Inject Reflex Markers", "模拟注入 Reflex 标记"), &inject)) {
-            g_config.reflex_inject = inject;
-            config_dirty = true;
-        }
-        HelpTip(TR("Synthesize NVIDIA Reflex markers for non-Reflex games. Enables driver-side JIT pacing and GPU clock boost. Auto-disables if the game has native Reflex support.",
-                   "为原生未集成 Reflex 的游戏模拟注入标记，激活驱动层实时帧同步与 GPU 频率增强。若游戏原生支持则自动禁用。"));
-
-        // Status indicator
-        if (ReflexInject_IsActive()) {
-            ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "%s", TR("(Active)", "(生效中)"));
-        } else if (g_config.reflex_inject) {
-            ImGui::SameLine();
-            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "%s", TR("(Waiting for device)", "(等待设备)"));
-        }
-
         // Flip Model Override toggle (DX11 only)
-        ImGui::Spacing();
         static bool s_flip_model_at_launch = g_config.flip_model_override;
         bool flip_override = g_config.flip_model_override;
         if (ImGui::Checkbox(TR("Flip Model Override", "DX11 翻转模型覆盖 (Flip Model)"), &flip_override)) {
             g_config.flip_model_override = flip_override;
             config_dirty = true;
         }
-        HelpTip(TR("Force DX11 games from bitblt to flip model presentation. Enables true VRR/G-Sync operation and eliminates DWM composition stutter. May break some games that use GDI interop or MSAA. Requires game restart to take effect.",
-                   "强制将 DX11 传统位块传输升级为现代翻转模型呈现。彻底消除桌面窗口管理器 (DWM) 合成卡顿并解锁完整可变刷新率。需重启游戏生效。"));
+        HelpTip(TR("Force DX11 games from bitblt to flip model presentation. Enables true FreeSync/VRR operation and eliminates DWM composition stutter. Requires game restart to take effect.",
+                   "强制将 DX11 传统位块传输升级为现代翻转模型呈现。彻底消除桌面窗口管理器 (DWM) 合成卡顿并解锁完整 FreeSync/VRR。需重启游戏生效。"));
         if (FlipModel_WasApplied()) {
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "%s", TR("(Active)", "(生效中)"));
@@ -1366,7 +1229,6 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
                 ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "%s", TR("(Restart required)", "(需重启游戏)"));
         }
 
-        // Telemetry Logging toggle
         ImGui::Spacing();
 #endif // _WIN64
 
@@ -1387,45 +1249,6 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         }
         HelpTip(TR("When enabled, the log file records detailed info-level messages. When disabled, only warnings and errors are logged. Enable this before reporting issues.",
                    "启用后日志记录详细排查信息；禁用时仅记录警告与错误。反馈排查问题时建议开启。"));
-
-#ifdef _WIN64
-        // DLSS Info Hooks toggle
-        ImGui::Spacing();
-        static bool s_dlss_hooks_at_launch = g_config.dlss_info_hooks;
-        bool dlss_hooks = g_config.dlss_info_hooks;
-        if (ImGui::Checkbox(TR("DLSS Info Hooks", "DLSS 状态拦截挂钩"), &dlss_hooks)) {
-            g_config.dlss_info_hooks = dlss_hooks;
-            config_dirty = true;
-        }
-        ImGui::SameLine();
-        if (dlss_hooks != s_dlss_hooks_at_launch)
-            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "%s", TR("(Restart required)", "(需重启游戏)"));
-        else if (dlss_hooks)
-            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "%s", TR("(Enabled)", "(已启用)"));
-        else
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", TR("(Disabled)", "(已禁用)"));
-        HelpTip(TR("Hooks into the DLSS pipeline to read quality mode, render resolution, and feature info for the OSD. Disable if experiencing crashes with DLSS games. FPS cap, FG detection, and pacing are unaffected.",
-                   "挂钩到 DLSS 管线以在 OSD 上显示画质、分辨率等状态。如个别游戏崩溃可关闭，不影响限帧器核心功能。"));
-
-        // Proactive Streamline Hooks toggle
-        ImGui::Spacing();
-        static bool s_proactive_at_launch = !g_config.streamline_compat;
-        bool proactive = !g_config.streamline_compat;
-        if (ImGui::Checkbox(TR("Proactive Streamline Hooks", "Streamline 主动挂钩兼容"), &proactive)) {
-            g_config.streamline_compat = !proactive;
-            config_dirty = true;
-        }
-        ImGui::SameLine();
-        if (proactive != s_proactive_at_launch)
-            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "%s", TR("(Restart required)", "(需重启游戏)"));
-        else if (proactive)
-            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "%s", TR("(Enabled)", "(已启用)"));
-        else
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", TR("(Disabled)", "(已禁用)"));
-        HelpTip(TR("Enable per-game if Frame Generation detection is incorrect (showing on when off, or not detecting when on). Most games don't need this — only enable if FG pacing info is missing or wrong. May break FG in some games if enabled unnecessarily. Requires a game restart to take effect.",
-                   "若插帧状态识别有误时针对特定游戏开启。绝大部分游戏无需开启。修改后需重启游戏生效。"));
-#endif // _WIN64
-
     }
 
     // ════════════════════════════════════════════
@@ -1506,195 +1329,34 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         else if (api == ActiveAPI::OpenGL) api_name = "OpenGL";
 
 #ifdef _WIN64
-        bool native_reflex = (g_dev != nullptr) || AreNvAPIMarkersFlowing();
-        bool pcl_markers = PCL_MarkersFlowing();
-        const char* reflex_str = "None";
-        if (native_reflex) reflex_str = "Native";
-        else if (pcl_markers) reflex_str = "PCL";
-        else if (ReflexInject_IsActive()) reflex_str = "Injected";
+        const char* enforce_mode = "Present";
+        if (api == ActiveAPI::DX12) enforce_mode = "Presentation Gate (DX12)";
+        else if (api == ActiveAPI::DX11) enforce_mode = "Presentation Gate (DX11)";
+        else if (api == ActiveAPI::Vulkan) enforce_mode = "Presentation Gate (Vulkan)";
+        else if (api == ActiveAPI::OpenGL) enforce_mode = "Presentation Gate (OpenGL)";
 
-        const char* enforce_mode = "None";
-        if (native_reflex) enforce_mode = "Marker (SIM_START)";
-        else if (pcl_markers) enforce_mode = "PCL (SIM_START)";
-        else if (ReflexInject_IsActive()) enforce_mode = "Injected (Present)";
-        else if (api == ActiveAPI::DX9 || api == ActiveAPI::DX11 || api == ActiveAPI::Vulkan || api == ActiveAPI::OpenGL) enforce_mode = "Present";
-
-        ImGui::Text("API: %s (64-bit)  |  Reflex: %s  |  Streamline: %s",
-                    api_name, reflex_str, IsStreamlinePresent() ? "Yes" : "No");
+        PacingMode mode = g_pacing_mode.load(std::memory_order_relaxed);
+        ImGui::Text("API: %s (64-bit)  |  Telemetry: AMD ADL2 PMLog  |  FreeSync/VRR: %s",
+                    api_name, (mode == PacingMode::VRR) ? "VRR" : "Fixed");
         ImGui::Text("Enforce: %s%s", enforce_mode,
                     FlipModel_WasApplied() ? "  |  Flip Model: Active" : "");
+
+        double ceil = g_ceiling_hz.load(std::memory_order_relaxed);
+        double floor = g_floor_hz.load(std::memory_order_relaxed);
+        if (mode == PacingMode::VRR && ceil > 1.0 && floor > 0.0)
+            ImGui::Text("FreeSync / VRR Range: %.0f - %.0f Hz", floor, ceil);
 #else
         ImGui::Text("API: %s (32-bit)  |  Enforce: Present", api_name);
 #endif
 
-        bool gsync = g_gsync_active.load(std::memory_order_relaxed);
-        PacingMode mode = g_pacing_mode.load(std::memory_order_relaxed);
-        {
-            // Per-game G-Sync state from DRS profile
-            DLSSPresets drs = DLSSPresets_Get();
-            const char* gsync_str = "Active";
-            if (drs.available && drs.gsync_requested_state == 1)
-                gsync_str = "Disabled";
-            else if (!gsync)
-                gsync_str = "Off";
-
-            double ceil = g_ceiling_hz.load(std::memory_order_relaxed);
-            double floor = g_floor_hz.load(std::memory_order_relaxed);
-            if (mode == PacingMode::VRR && ceil > 1.0 && floor > 0.0)
-                ImGui::Text("G-Sync: %s  |  Mode: VRR (%.0f-%.0fHz)", gsync_str, floor, ceil);
-            else
-                ImGui::Text("G-Sync: %s  |  Mode: %s", gsync_str, mode == PacingMode::VRR ? "VRR" : "Fixed");
-        }
-
-#ifdef _WIN64
-        // FG pacing status
-        int fg_div_raw = ComputeFGDivisorRaw();
-        if (IsDmfgActive()) {
-            ImGui::Text("FG Pacing: Dynamic (passthrough)");
-        } else if (fg_div_raw > 1) {
-            double eff_us = g_effective_interval_us.load(std::memory_order_relaxed);
-            double native_fps = (eff_us > 0.0) ? 1000000.0 / eff_us : 0.0;
-            ImGui::Text("FG Pacing: %dx  |  Native: %.0f fps (%.1f ms)",
-                        fg_div_raw, native_fps, eff_us / 1000.0);
-            if (IsNvSmoothMotionActive())
-                ImGui::Text("  (NVIDIA Smooth Motion detected)");
-        }
-#endif
-
-        // Pipeline health — wired to real checks
-        bool sim_ok = AreMarkersFlowing();
+        // Pipeline health
         bool present_ok = IsSwapchainValid();
-
         ImVec4 col_ok = ImVec4(0.2f, 0.9f, 0.2f, 1.0f);
         ImVec4 col_bad = ImVec4(0.9f, 0.2f, 0.2f, 1.0f);
-        ImVec4 col_na  = ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
 
         ImGui::Text("Pipeline:");
         ImGui::SameLine();
-        ImGui::TextColored(sim_ok ? col_ok : col_bad, "SIM %s", sim_ok ? "ok" : "X");
-        ImGui::SameLine();
-        ImGui::Text("|");
-        ImGui::SameLine();
-#ifdef _WIN64
-        if (IsDmfgActive())
-            ImGui::TextColored(col_na, "RENDER n/a");
-        else {
-            bool render_ok = IsCorrelatorValid() && IsDXGIStatsFresh();
-            ImGui::TextColored(render_ok ? col_ok : col_bad, "RENDER %s", render_ok ? "ok" : "X");
-        }
-#else
-        ImGui::TextColored(col_na, "RENDER n/a");
-#endif
-        ImGui::SameLine();
-        ImGui::Text("|");
-        ImGui::SameLine();
         ImGui::TextColored(present_ok ? col_ok : col_bad, "PRESENT %s", present_ok ? "ok" : "X");
-    }
-
-    // DLSS / Streamline info — always visible in settings panel
-    {
-        NGXDLSSInfo dlss = NGXHooks_GetInfo();
-        if (dlss.available) {
-            DLSSPresets_Poll();
-            DLSSPresets presets = DLSSPresets_Get();
-
-            // Quality level
-            const char* quality_str = "Unknown";
-            char quality_buf[64] = {};
-            if (dlss.dlaa) {
-                quality_str = "DLAA";
-            } else if (dlss.output_width > 0 && dlss.render_width > 0) {
-                float ratio = static_cast<float>(dlss.render_width) /
-                              static_cast<float>(dlss.output_width);
-                int pct = static_cast<int>(ratio * 100.0f + 0.5f);
-                int rw = static_cast<int>(dlss.render_width);
-                int ow = static_cast<int>(dlss.output_width);
-                int tol = (std::max)(15, ow / 100);
-                #define DLSS_NEAR2(target) (rw >= (int)(ow * target + 0.5f) - tol && rw <= (int)(ow * target + 0.5f) + tol)
-                const char* mode = nullptr;
-                if (DLSS_NEAR2(1.00f))      mode = "DLAA";
-                else if (DLSS_NEAR2(0.99f)) mode = "DLAA Alt";
-                else if (DLSS_NEAR2(0.88f)) mode = "DLAA Lite";
-                else if (DLSS_NEAR2(0.77f)) mode = "Ultra Quality";
-                else if (DLSS_NEAR2(0.75f)) mode = "Quality+";
-                else if (DLSS_NEAR2(0.67f)) mode = "Quality";
-                else if (DLSS_NEAR2(0.58f)) mode = "Balanced";
-                else if (DLSS_NEAR2(0.50f)) mode = "Performance";
-                else if (DLSS_NEAR2(0.45f)) mode = "Performance-";
-                else if (DLSS_NEAR2(0.33f)) mode = "Ultra Perf";
-                #undef DLSS_NEAR2
-                if (mode)
-                    snprintf(quality_buf, sizeof(quality_buf), "%s (%d%%)", mode, pct);
-                else
-                    snprintf(quality_buf, sizeof(quality_buf), "Custom (%d%%)", pct);
-                quality_str = quality_buf;
-            } else {
-                switch (dlss.quality_level) {
-                    case 0: quality_str = "Performance"; break;
-                    case 1: quality_str = "Balanced"; break;
-                    case 2: quality_str = "Quality"; break;
-                    case 3: quality_str = "Ultra Perf"; break;
-                    case 4: quality_str = "Ultra Quality"; break;
-                    case 5: quality_str = "DLAA"; break;
-                }
-            }
-
-            // Features
-            char feat_buf[32] = {};
-            int fp = 0;
-            if (dlss.rr_active)
-                fp += snprintf(feat_buf + fp, sizeof(feat_buf) - fp, "RR");
-            else if (dlss.sr_active)
-                fp += snprintf(feat_buf + fp, sizeof(feat_buf) - fp, "SR");
-            if (dlss.fg_active)
-                fp += snprintf(feat_buf + fp, sizeof(feat_buf) - fp, "%sFG", fp > 0 ? "+" : "");
-
-            ImGui::Text("DLSS: %s  |  %s  |  %ux%u -> %ux%u",
-                        quality_str, fp > 0 ? feat_buf : "None",
-                        dlss.render_width, dlss.render_height,
-                        dlss.output_width, dlss.output_height);
-
-            // Presets + versions on second line
-            {
-                auto idxToLetter = [](int idx) -> const char* {
-                    static char b[4];
-                    if (idx <= 0) return nullptr;
-                    if (idx >= 1 && idx <= 26) { b[0] = 'A' + (char)(idx - 1); b[1] = '\0'; return b; }
-                    return nullptr;
-                };
-
-                char line2[128];
-                int p2 = 0;
-
-                // Presets
-                const char* up_label = dlss.rr_active ? "RR" : "SR";
-                const char* up_val = nullptr;
-                if (dlss.rr_active) {
-                    if (presets.available && presets.rr[0] != '-') up_val = presets.rr;
-                    else up_val = idxToLetter(dlss.rr_preset);
-                } else {
-                    if (presets.available && presets.sr[0] != '-') up_val = presets.sr;
-                    else up_val = idxToLetter(dlss.sr_preset);
-                }
-                if (up_val)
-                    p2 += snprintf(line2 + p2, sizeof(line2) - p2, "%s=%s", up_label, up_val);
-                if (IsFGDllLoaded() && presets.available && presets.fg[0] != '-')
-                    p2 += snprintf(line2 + p2, sizeof(line2) - p2, "%sFG=%s", p2 > 0 ? " " : "", presets.fg);
-
-                // Versions
-                if (dlss.sr_version[0])
-                    p2 += snprintf(line2 + p2, sizeof(line2) - p2, "%sSR v%s", p2 > 0 ? "  |  " : "", dlss.sr_version);
-                if (dlss.rr_version[0])
-                    p2 += snprintf(line2 + p2, sizeof(line2) - p2, "%sRR v%s", p2 > 0 ? "  |  " : "", dlss.rr_version);
-                if (dlss.fg_version[0])
-                    p2 += snprintf(line2 + p2, sizeof(line2) - p2, "%sFG v%s", p2 > 0 ? "  |  " : "", dlss.fg_version);
-                if (dlss.sl_version[0])
-                    p2 += snprintf(line2 + p2, sizeof(line2) - p2, "%sSL v%s", p2 > 0 ? "  |  " : "", dlss.sl_version);
-
-                if (p2 > 0)
-                    ImGui::Text("%s", line2);
-            }
-        }
     }
 
     // Save immediately when any setting was changed this frame
@@ -1797,7 +1459,6 @@ static ImVec4 ColPerf()     { float b = g_config.osd_text_brightness; return ImV
 static ImVec4 ColLatency()  { float b = g_config.osd_text_brightness; return ImVec4(1.0f*b, 0.7f*b, 0.3f*b, 1.0f); }
 static ImVec4 ColPipeline() { float b = g_config.osd_text_brightness; return ImVec4(0.6f*b, 0.8f*b, 1.0f*b, 1.0f); }
 static ImVec4 ColSystem()   { float b = g_config.osd_text_brightness; return ImVec4(0.7f*b, 0.7f*b, 0.7f*b, 1.0f); }
-static ImVec4 ColDLSS()     { float b = g_config.osd_text_brightness; return ImVec4(0.5f*b, 1.0f*b, 0.5f*b, 1.0f); }
 static ImVec4 ColStatus()   { float b = g_config.osd_text_brightness; return ImVec4(1.0f*b, 0.3f*b, 0.3f*b, 1.0f); }
 
 static ImVec4 PQIColor(double score) {
@@ -1805,17 +1466,6 @@ static ImVec4 PQIColor(double score) {
     if (score >= 0.9) return ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f);
     if (score >= 0.7) return ImVec4(0.9f*b, 0.9f*b, 0.2f*b, 1.0f);
     return ImVec4(0.9f*b, 0.2f*b, 0.2f*b, 1.0f);
-}
-
-static void OSDText(const char* text) {
-    float b = g_config.osd_text_brightness;
-    if (g_config.osd_drop_shadow) {
-        ImVec2 pos = ImGui::GetCursorScreenPos();
-        float offset = (std::max)(1.0f, g_config.osd_scale);
-        ImU32 shadow = ImGui::ColorConvertFloat4ToU32(ImVec4(0, 0, 0, 0.8f));
-        ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x + offset, pos.y + offset), shadow, text);
-    }
-    ImGui::TextColored(ImVec4(b, b, b, 1.0f), "%s", text);
 }
 
 static void OSDTextColored(ImVec4 col, const char* text) {
@@ -2138,21 +1788,6 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
     // Update hardware sensors (throttled internally to ~1Hz)
     HWMonitor_Update();
 
-    // Streamline Compatibility: poll GetState for FG state (throttled to every 500ms)
-    StreamlineCompat_Poll();
-
-    // Retry NGX hook installation for games where DLLs load late.
-    // TryInstall is idempotent — no-ops once hooks are installed.
-    // Stops after ~30 seconds.
-    {
-        static int s_ngx_retry_counter = 0;
-        if (s_ngx_retry_counter < 5000) {  // ~30s at 165fps
-            s_ngx_retry_counter++;
-            if (s_ngx_retry_counter % 60 == 0 && g_config.dlss_info_hooks)
-                NGXHooks_TryInstall();
-        }
-    }
-
     // Real FPS from enforcement-to-enforcement interval (CPU frames only)
     // EMA-smoothed so the OSD number is readable instead of flickering.
     double ft = g_actual_frame_time_us.load(std::memory_order_relaxed);
@@ -2177,43 +1812,6 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
             s_display_render_fps = s_real_fps;
             s_display_output_fps = g_output_fps.load(std::memory_order_relaxed);
         }
-    }
-
-    const char* fg_label = "off";
-    int fg_mult = g_fg_multiplier.load(std::memory_order_relaxed);
-    bool fg_presenting = g_fg_presenting.load(std::memory_order_relaxed);
-    int fg_mode = g_fg_mode.load(std::memory_order_relaxed);
-    char fg_buf[32] = {};
-    // Determine if FG is actively producing frames:
-    // - With Streamline mode data: mode > 0 AND presenting
-    // - Without mode data: just presenting (mode is always 0)
-    bool fg_display_active = fg_presenting && fg_mult > 0;
-    if (Streamline_HasModeData() && fg_mode == 0)
-        fg_display_active = false;
-    // Driver-authoritative FG confirmation: if the Reflex ring is reporting GPU data
-    // but aiFrameTimeUs is 0, FG isn't actually producing interpolated frames.
-    // Prevents false positives where compat poll reports FG active but it's off in-game.
-    if (fg_display_active) {
-        double ai_ft = g_reflex_ai_frame_time_us.load(std::memory_order_relaxed);
-        double gpu_active = g_reflex_gpu_active_us.load(std::memory_order_relaxed);
-        if (gpu_active > 0.0 && ai_ft == 0.0)
-            fg_display_active = false;
-    }
-    if (fg_display_active) {
-        // Use actual driver multiplier when available (handles control panel overrides)
-        int actual = g_fg_actual_multiplier.load(std::memory_order_relaxed);
-        int display_mult = (actual >= 2) ? actual : (fg_mult + 1);
-
-        // DRS MFG override: if Profile Inspector sets a higher generation factor, show that
-        DLSSPresets presets_fg = DLSSPresets_Get();
-        if (presets_fg.available && presets_fg.mfg_generation_factor > 0) {
-            int drs_mult = presets_fg.mfg_generation_factor + 1;
-            if (drs_mult > display_mult)
-                display_mult = drs_mult;
-        }
-
-        snprintf(fg_buf, sizeof(fg_buf), "%dx", display_mult);
-        fg_label = fg_buf;
     }
 
     int tier = static_cast<int>(g_current_tier);
@@ -2248,14 +1846,9 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
         s_ft_history_idx = (s_ft_history_idx + 1) % FT_HISTORY_SIZE;
         if (ft > 0.0) {
             double display_ft = ft;
-            if (IsNvSmoothMotionActive())
-                display_ft = ft / 2.0;  // SM always 2x
-            else if (fg_presenting && fg_mult > 0 && (IsFGDllLoaded() || IsDmfgActive())) {
-                // Use the real divisor (accounts for DRS MFG override)
-                int divisor = ComputeFGDivisorRaw();
-                if (divisor >= 2)
-                    display_ft = ft / static_cast<double>(divisor);
-                // else: divisor < 2 means FG not confirmed — don't divide, use ft as-is
+            int divisor = ComputeFGDivisorRaw();
+            if (divisor >= 2) {
+                display_ft = ft / static_cast<double>(divisor);
             }
             // Feed 1% low history when actively pacing (T0-T2a).
             // T3/T4 are passthrough — unlocked frame times corrupt the window.
@@ -2279,26 +1872,8 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
             double output = s_display_output_fps;
             int fg_div_raw = ComputeFGDivisorRaw();
             char buf[64];
-            if (IsNvSmoothMotionActive()) {
-                snprintf(buf, sizeof(buf), "%.0f fps (%.1f render)", s_display_fps * 2.0, s_display_fps);
-            } else if (IsDmfgActive() && output > 0.0) {
+            if (output > 0.0 && fg_div_raw > 1) {
                 snprintf(buf, sizeof(buf), "%.0f fps (%.1f render)", output, s_display_fps);
-            } else if (output > 0.0 && fg_presenting && fg_mult > 0 && fg_div_raw > 1 && (IsFGDllLoaded() || IsDmfgActive())) {
-                // Check if output counter is seeing FG presents.
-                // If output ≈ render (within 20%), the counter only sees native presents
-                // (third-party FG injector case). Infer output from render × divisor.
-                double ratio = (s_display_fps > 1.0) ? output / s_display_fps : 0.0;
-                if (fg_div_raw > 1 && ratio < 1.3) {
-                    // Output counter missed FG presents — infer
-                    double inferred = s_display_fps * static_cast<double>(fg_div_raw);
-                    snprintf(buf, sizeof(buf), "~%.0f fps (%.1f render)", inferred, s_display_fps);
-                } else {
-                    snprintf(buf, sizeof(buf), "%.0f fps (%.1f render)", output, s_display_fps);
-                }
-            } else if (fg_div_raw > 1 && s_display_fps > 1.0 && (IsFGDllLoaded() || IsDmfgActive())) {
-                // FG active but no output counter data — infer
-                double inferred = s_display_fps * static_cast<double>(fg_div_raw);
-                snprintf(buf, sizeof(buf), "~%.0f fps (%.1f render)", inferred, s_display_fps);
             } else {
                 snprintf(buf, sizeof(buf), "%.1f fps", s_display_fps);
             }
@@ -2359,31 +1934,21 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
             }
         }
 
-        if (g_config.osd_show_fg_time) {
-            double fg_us = g_reflex_ai_frame_time_us.load(std::memory_order_relaxed);
-            if (fg_us > 0.0) {
-                char buf[32];
-                snprintf(buf, sizeof(buf), "FG: %.1f ms", fg_us / 1000.0);
-                OSDTextColored(ColLatency(), buf);
-            }
-        }
-
         // ═══════════════════════════════════
         // QUALITY (green/yellow/red)
-        // — hidden during DMFG passthrough (scheduler isn't pacing, scores are meaningless)
         // ═══════════════════════════════════
         PQIScores pqi = {};
-        if (!IsDmfgActive() && (g_config.osd_show_pqi || g_config.osd_show_pqi_breakdown))
+        if (g_config.osd_show_pqi || g_config.osd_show_pqi_breakdown)
             pqi = PQI_GetRolling();
 
-        if (!IsDmfgActive() && g_config.osd_show_pqi) {
+        if (g_config.osd_show_pqi) {
             ImVec4 pqi_color = PQIColor(pqi.pqi / 100.0);
             char buf[32];
             snprintf(buf, sizeof(buf), "PQI: %.0f%%", pqi.pqi);
             OSDTextColored(pqi_color, buf);
         }
 
-        if (!IsDmfgActive() && g_config.osd_show_pqi && g_config.osd_show_pqi_breakdown) {
+        if (g_config.osd_show_pqi && g_config.osd_show_pqi_breakdown) {
             char buf[64];
             snprintf(buf, sizeof(buf), " Cadence: %.0f%%", pqi.cadence * 100.0);
             OSDTextColored(PQIColor(pqi.cadence), buf);
@@ -2412,58 +1977,20 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
         // PIPELINE (light blue)
         // ═══════════════════════════════════
 #ifdef _WIN64
-        if (g_config.osd_show_fg && (IsFGDllLoaded() || IsNvSmoothMotionActive())) {
+        int fg_div_raw = ComputeFGDivisorRaw();
+        if (g_config.osd_show_fg && fg_div_raw > 1) {
             char buf[48];
-            if (IsNvSmoothMotionActive()) {
-                snprintf(buf, sizeof(buf), "FG: Smooth Motion");
-            } else if (IsDmfgActive()) {
-                // For DMFG, infer the real-time multiplier from output/render ratio.
-                // This shows what the driver is actually doing right now (fluctuates with load).
-                int display_mult = 0;
-                if (s_display_output_fps > 0.0 && s_display_fps > 1.0) {
-                    int inferred = static_cast<int>(s_display_output_fps / s_display_fps + 0.5);
-                    if (inferred >= 2 && inferred <= 8)
-                        display_mult = inferred;
-                }
-                // Fallback to DRS configured max if inference not ready
-                if (display_mult < 2) {
-                    DLSSPresets presets_dmfg = DLSSPresets_Get();
-                    if (presets_dmfg.available && presets_dmfg.mfg_generation_factor > 0)
-                        display_mult = presets_dmfg.mfg_generation_factor + 1;
-                }
-
-                // Show DRS target FPS on OSD when set
-                DLSSPresets presets_osd = DLSSPresets_Get();
-                int drs_target = presets_osd.mfg_dynamic_target_fps;
-                int display_cap = 0;
-                if (drs_target == 0x01000000) {
-                    double ceil = g_ceiling_hz.load(std::memory_order_relaxed);
-                    display_cap = (ceil > 1.0) ? static_cast<int>(ceil - (ceil * ceil / 3600.0)) : 0;
-                } else if (drs_target > 0) {
-                    display_cap = drs_target;
-                }
-
-                if (display_cap > 0 && display_mult >= 2)
-                    snprintf(buf, sizeof(buf), "FG: Dynamic %dx [%d]", display_mult, display_cap);
-                else if (display_mult >= 2)
-                    snprintf(buf, sizeof(buf), "FG: Dynamic %dx", display_mult);
-                else if (display_cap > 0)
-                    snprintf(buf, sizeof(buf), "FG: Dynamic [%d]", display_cap);
-                else
-                    snprintf(buf, sizeof(buf), "FG: Dynamic");
-            } else {
-                snprintf(buf, sizeof(buf), "FG: %s", fg_label);
-            }
+            snprintf(buf, sizeof(buf), "FG: %dx", fg_div_raw);
             OSDTextColored(ColPipeline(), buf);
         }
 
-        if (g_config.osd_show_limiter && !IsDmfgActive()) {
+        if (g_config.osd_show_limiter) {
             char buf[48];
             snprintf(buf, sizeof(buf), "Limiter: +%.1f ms  T%d", limiter_added_ms, tier);
             OSDTextColored(ColPipeline(), buf);
         }
 
-        if (g_config.osd_show_adaptive_smoothing && g_config.adaptive_smoothing && !IsDmfgActive()) {
+        if (g_config.osd_show_adaptive_smoothing && g_config.adaptive_smoothing) {
             double offset = g_smoothing_offset_us.load(std::memory_order_relaxed);
             double p99 = g_smoothing_p99_us.load(std::memory_order_relaxed);
             if (g_adaptive_smoothing.IsWarm()) {
@@ -2480,164 +2007,6 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
             }
         }
 #endif // _WIN64 (Pipeline section: FG, Limiter, Adaptive Smoothing)
-
-        // ═══════════════════════════════════
-        // DLSS (green — NGX feature info)
-        // ═══════════════════════════════════
-        {
-            NGXDLSSInfo dlss = NGXHooks_GetInfo();
-            DLSSPresets_Poll();
-            DLSSPresets presets = DLSSPresets_Get();
-
-            // Quality level
-            if (g_config.osd_show_dlss_quality && dlss.available) {
-                char buf[64];
-
-                if (dlss.dlaa) {
-                    snprintf(buf, sizeof(buf), "DLSS: DLAA");
-                } else if (dlss.output_width > 0 && dlss.render_width > 0) {
-                    // Detect quality mode from render/output ratio with ±5px tolerance
-                    float ratio = static_cast<float>(dlss.render_width) /
-                                  static_cast<float>(dlss.output_width);
-                    int rw = static_cast<int>(dlss.render_width);
-                    int ow = static_cast<int>(dlss.output_width);
-
-                    // Check if render width is within tolerance of expected for each mode.
-                    // Tolerance scales with output width (1%, min 15px) to handle
-                    // ultrawide resolutions where DLSS DLL rounding is larger.
-                    int tol = (std::max)(15, ow / 100);
-                    #define DLSS_NEAR(target) (rw >= (int)(ow * target + 0.5f) - tol && rw <= (int)(ow * target + 0.5f) + tol)
-
-                    const char* mode = nullptr;
-                    if (DLSS_NEAR(1.00f))      mode = "DLAA";
-                    else if (DLSS_NEAR(0.99f)) mode = "DLAA Alt";
-                    else if (DLSS_NEAR(0.88f)) mode = "DLAA Lite";
-                    else if (DLSS_NEAR(0.77f)) mode = "Ultra Quality";
-                    else if (DLSS_NEAR(0.75f)) mode = "Quality+";
-                    else if (DLSS_NEAR(0.67f)) mode = "Quality";
-                    else if (DLSS_NEAR(0.58f)) mode = "Balanced";
-                    else if (DLSS_NEAR(0.50f)) mode = "Performance";
-                    else if (DLSS_NEAR(0.45f)) mode = "Performance-";
-                    else if (DLSS_NEAR(0.33f)) mode = "Ultra Perf";
-
-                    #undef DLSS_NEAR
-
-                    if (mode) {
-                        int pct = static_cast<int>(ratio * 100.0f + 0.5f);
-                        snprintf(buf, sizeof(buf), "DLSS: %s (%d%%)", mode, pct);
-                    } else {
-                        int pct = static_cast<int>(ratio * 100.0f + 0.5f);
-                        snprintf(buf, sizeof(buf), "DLSS: Custom (%d%%)", pct);
-                    }
-                } else {
-                    // Fallback to PerfQualityValue when resolution not available
-                    const char* quality_name = "Unknown";
-                    switch (dlss.quality_level) {
-                        case 0: quality_name = "Performance"; break;
-                        case 1: quality_name = "Balanced"; break;
-                        case 2: quality_name = "Quality"; break;
-                        case 3: quality_name = "Ultra Perf"; break;
-                        case 4: quality_name = "Ultra Quality"; break;
-                        case 5: quality_name = "DLAA"; break;
-                    }
-                    snprintf(buf, sizeof(buf), "DLSS: %s", quality_name);
-                }
-                OSDTextColored(ColDLSS(), buf);
-            }
-
-            // Features — SR and RR are mutually exclusive
-            if (g_config.osd_show_dlss_features && dlss.available) {
-                char feat_buf[64] = {};
-                int pos = 0;
-                if (dlss.rr_active)
-                    pos += snprintf(feat_buf + pos, sizeof(feat_buf) - pos, "RR");
-                else if (dlss.sr_active)
-                    pos += snprintf(feat_buf + pos, sizeof(feat_buf) - pos, "SR");
-                if (dlss.fg_active)
-                    pos += snprintf(feat_buf + pos, sizeof(feat_buf) - pos, "%sFG", pos > 0 ? "+" : "");
-                if (pos > 0) {
-                    char line[80];
-                    snprintf(line, sizeof(line), "Features: %s", feat_buf);
-                    OSDTextColored(ColDLSS(), line);
-                }
-            }
-
-            if (g_config.osd_show_dlss_resolution && dlss.available && dlss.render_width > 0) {
-                char buf[80];
-                snprintf(buf, sizeof(buf), "Render: %ux%u -> %ux%u",
-                         dlss.render_width, dlss.render_height,
-                         dlss.output_width, dlss.output_height);
-                OSDTextColored(ColDLSS(), buf);
-            }
-
-            // Presets — show override if set, otherwise SDK default
-            // SR and RR are mutually exclusive, FG only shown if preset exists
-            if (g_config.osd_show_dlss_presets && dlss.available) {
-                // Helper to convert preset index to letter
-                auto idxToLetter = [](int idx) -> const char* {
-                    static char buf[4];
-                    if (idx <= 0) return nullptr;
-                    if (idx >= 1 && idx <= 26) {
-                        buf[0] = 'A' + static_cast<char>(idx - 1);
-                        buf[1] = '\0';
-                        return buf;
-                    }
-                    return nullptr;
-                };
-
-                // Determine upscaler label and value
-                const char* up_label = nullptr;
-                const char* up_val = nullptr;
-
-                if (dlss.rr_active) {
-                    up_label = "RR";
-                    // Override first, then SDK default for RR
-                    if (presets.available && presets.rr[0] != '-')
-                        up_val = presets.rr;
-                    else
-                        up_val = idxToLetter(dlss.rr_preset);
-                } else {
-                    up_label = "SR";
-                    // Override first, then SDK default from NGX
-                    if (presets.available && presets.sr[0] != '-')
-                        up_val = presets.sr;
-                    else
-                        up_val = idxToLetter(dlss.sr_preset);
-                }
-
-                // FG — only show if FG DLL is loaded (game supports FG)
-                const char* fg_val = nullptr;
-                if (IsFGDllLoaded() && presets.available && presets.fg[0] != '-')
-                    fg_val = presets.fg;
-
-                if (up_val || fg_val) {
-                    char line[80];
-                    int pos = snprintf(line, sizeof(line), "Presets:");
-                    if (up_val)
-                        pos += snprintf(line + pos, sizeof(line) - pos, " %s=%s", up_label, up_val);
-                    if (fg_val)
-                        pos += snprintf(line + pos, sizeof(line) - pos, " FG=%s", fg_val);
-                    OSDTextColored(ColDLSS(), line);
-                }
-            }
-
-            // Versions — show loaded DLSS/Streamline DLL versions
-            if (g_config.osd_show_dlss_versions && dlss.available) {
-                char line[128];
-                int pos = 0;
-                // Show SR or RR version (mutually exclusive display, like features)
-                if (dlss.rr_active && dlss.rr_version[0])
-                    pos += snprintf(line + pos, sizeof(line) - pos, "RR v%s", dlss.rr_version);
-                else if (dlss.sr_version[0])
-                    pos += snprintf(line + pos, sizeof(line) - pos, "SR v%s", dlss.sr_version);
-                if (dlss.fg_version[0])
-                    pos += snprintf(line + pos, sizeof(line) - pos, "%sFG v%s", pos > 0 ? " | " : "", dlss.fg_version);
-                if (dlss.sl_version[0])
-                    pos += snprintf(line + pos, sizeof(line) - pos, "%sSL v%s", pos > 0 ? " | " : "", dlss.sl_version);
-                if (pos > 0)
-                    OSDTextColored(ColDLSS(), line);
-            }
-        }
 
         // ═══════════════════════════════════
         // SYSTEM (grey — hardware sensors)

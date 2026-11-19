@@ -3,16 +3,13 @@
 #pragma comment(lib, "Psapi.lib")
 #include "osd.h"
 #include "hw_monitor.h"
-#include "ngx_hooks.h"
 #include "blackout.h"
 #include "focus_lock.h"
 #include <MinHook.h>
 #include <atomic>
 
 #include "hooks.h"
-#include "nvapi_hooks.h"
 #include "loadlib_hooks.h"
-#include "streamline_hooks.h"
 #include "timer_hooks.h"
 #include "system_hardening.h"
 #include "marker_log.h"
@@ -35,7 +32,6 @@
 #include "display_resolver.h"
 #include "vsync_control.h"
 #include "flip_model.h"
-#include "dlss_presets.h"
 
 // g_swapchain moved to flush.cpp (managed by OnInitSwapchain/OnDestroySwapchain)
 // g_presenting_swapchain moved to correlator.cpp (read-only consumer)
@@ -133,12 +129,6 @@ static void on_init_device(reshade::api::device* device) {
     SwapMgr_OnInitDevice(device);
 }
 static void on_destroy_device(reshade::api::device* device) {
-    // Clear g_dev if this is the device we captured for GetLatency.
-    // Prevents stale pointer crashes during device transitions (alt-tab, resize).
-    if (g_dev) {
-        g_dev = nullptr;
-        LOG_INFO("NvAPI: g_dev cleared on device destroy");
-    }
     SwapMgr_OnDestroyDevice(device);
 }
 static void on_init_swapchain(reshade::api::swapchain* sc, bool resize) {
@@ -280,8 +270,6 @@ static void on_present(reshade::api::command_queue* queue,
             s_hooks_installed = true;
             InstallLoadLibraryHooks();
             LOG_INFO("LoadLibrary hooks installed (deferred)");
-            InstallNvAPIHooks();
-            LOG_INFO("NvAPI hooks installed (deferred)");
         }
     }
 
@@ -346,9 +334,6 @@ static void on_present(reshade::api::command_queue* queue,
             }
         }
     }
-
-    // Check deferred FG inference (promotes or revokes after confirmation window)
-    CheckDeferredFGInference();
 
     LARGE_INTEGER now_qpc;
     QueryPerformanceCounter(&now_qpc);
@@ -469,9 +454,6 @@ static bool DoInit(HMODULE hModule, HMODULE reshade_module) {
         reshade::register_event<reshade::addon_event::set_fullscreen_state>(on_set_fullscreen_state);
         RegisterOSD();
         HWMonitor_Init();
-        DLSSPresets_Init();  // DRS profile reader (G-Sync state, MFG settings) — independent of NGX hooks
-        if (g_config.dlss_info_hooks) NGXHooks_Init();
-        else LOG_WARN("DLSS info hooks disabled by user config");
         Blackout_Init();
         LOG_INFO("ReShade events + OSD registered");
 
@@ -516,9 +498,7 @@ void WINAPI AddonUninit(HMODULE /*addon_module*/, HMODULE /*reshade_module*/) {
     SaveConfig();
     SetUnhandledExceptionFilter(ShutdownCrashHandler);
     SuppressWEROnShutdown();
-    RestoreGameSleepMode();  // restore game's original Reflex params
     HWMonitor_Shutdown();
-    NGXHooks_Shutdown();
     Blackout_Shutdown();
     FocusLock_Remove();
     StopVBlankThread();
@@ -568,9 +548,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             SaveConfig();
             SetUnhandledExceptionFilter(ShutdownCrashHandler);
             SuppressWEROnShutdown();
-            RestoreGameSleepMode();  // restore game's original Reflex params
             HWMonitor_Shutdown();
-            NGXHooks_Shutdown();
             Blackout_Shutdown();
             FocusLock_Remove();
             StopVBlankThread();
