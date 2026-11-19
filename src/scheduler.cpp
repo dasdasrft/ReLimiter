@@ -264,6 +264,25 @@ void OnMarker(uint64_t frameID, int64_t now) {
 
         if (telemetry_ft > 0.0) {
             g_actual_frame_time_us.store(telemetry_ft, std::memory_order_relaxed);
+            // In uncapped mode (target_fps <= 0), update telemetry channels so OSD displays them
+            double t_gpu = g_gpu_timer.GetLatestGpuTimeUs();
+            if (t_gpu <= 0.0) t_gpu = g_reflex_gpu_active_us.load(std::memory_order_relaxed);
+            if (t_gpu <= 0.0) t_gpu = g_measured_render_time_us.load(std::memory_order_relaxed);
+            if (t_gpu > 0.0) g_telemetry_gpu_work_us.store(t_gpu, std::memory_order_relaxed);
+
+            double t_cpu = (telemetry_ft > t_gpu && t_gpu > 0.0) ? (telemetry_ft - t_gpu) : telemetry_ft;
+            g_telemetry_cpu_work_us.store(t_cpu, std::memory_order_relaxed);
+
+            // Update bottleneck kind in uncapped mode
+            if (t_gpu > 0.0 && t_cpu > 0.0) {
+                if (t_gpu > t_cpu * 1.08) {
+                    g_bottleneck_kind.store(BottleneckKind::GpuBound, std::memory_order_relaxed);
+                } else if (t_cpu > t_gpu * 1.08) {
+                    g_bottleneck_kind.store(BottleneckKind::CpuBound, std::memory_order_relaxed);
+                } else {
+                    g_bottleneck_kind.store(BottleneckKind::Unknown, std::memory_order_relaxed);
+                }
+            }
         }
 
         double output_fps = g_output_fps.load(std::memory_order_relaxed);
@@ -458,6 +477,25 @@ void OnMarker(uint64_t frameID, int64_t now) {
 
         if (telemetry_ft > 0.0) {
             g_actual_frame_time_us.store(telemetry_ft, std::memory_order_relaxed);
+            // In uncapped mode (target_fps <= 0), update telemetry channels so OSD displays them
+            double t_gpu = g_gpu_timer.GetLatestGpuTimeUs();
+            if (t_gpu <= 0.0) t_gpu = g_reflex_gpu_active_us.load(std::memory_order_relaxed);
+            if (t_gpu <= 0.0) t_gpu = g_measured_render_time_us.load(std::memory_order_relaxed);
+            if (t_gpu > 0.0) g_telemetry_gpu_work_us.store(t_gpu, std::memory_order_relaxed);
+
+            double t_cpu = (telemetry_ft > t_gpu && t_gpu > 0.0) ? (telemetry_ft - t_gpu) : telemetry_ft;
+            g_telemetry_cpu_work_us.store(t_cpu, std::memory_order_relaxed);
+
+            // Update bottleneck kind in uncapped mode
+            if (t_gpu > 0.0 && t_cpu > 0.0) {
+                if (t_gpu > t_cpu * 1.08) {
+                    g_bottleneck_kind.store(BottleneckKind::GpuBound, std::memory_order_relaxed);
+                } else if (t_cpu > t_gpu * 1.08) {
+                    g_bottleneck_kind.store(BottleneckKind::CpuBound, std::memory_order_relaxed);
+                } else {
+                    g_bottleneck_kind.store(BottleneckKind::Unknown, std::memory_order_relaxed);
+                }
+            }
         }
 
         g_predictor.OnEnforcement(frameID, ts);

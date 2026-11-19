@@ -19,7 +19,7 @@ struct Config {
     bool osd_enabled = false;
     float osd_x = 0.005f;              // 0.0–1.0 screen percentage
     float osd_y = 0.005f;              // 0.0–1.0 screen percentage
-    float osd_opacity = 0.6f;
+    float osd_opacity = 0.90f;
     std::string osd_toggle_key = "PageUp";
     std::string osd_preset_prev_key = "";
     std::string osd_preset_next_key = "";
@@ -160,7 +160,7 @@ struct OSDPreset {
     float osd_x = 0.005f;
     float osd_y = 0.005f;
     float osd_scale = 1.0f;
-    float osd_opacity = 0.6f;
+    float osd_opacity = 0.90f;
     // Element toggles
     bool show_fps = false;
     bool show_frametime = false;

@@ -1994,7 +1994,7 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
         if (gpu_lat_us <= 0.0) gpu_lat_us = g_measured_render_time_us.load(std::memory_order_relaxed);
     }
     double total_cost_us = 0.0;
-    if (g_config.osd_show_total_frame_cost || (g_config.osd_show_gpu_render_time && cpu_lat_us > 0.0)) {
+    if (g_config.osd_show_total_frame_cost || g_config.osd_show_gpu_render_time || g_config.osd_show_cpu_latency) {
         total_cost_us = g_reflex_total_frame_cost_us.load(std::memory_order_relaxed);
         if (total_cost_us <= 0.0 && (gpu_lat_us > 0.0 || cpu_lat_us > 0.0)) {
             total_cost_us = gpu_lat_us + cpu_lat_us;
@@ -2002,6 +2002,20 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
         if (total_cost_us <= 0.0) {
             total_cost_us = g_measured_render_time_us.load(std::memory_order_relaxed);
         }
+    }
+
+    // Dynamic latency fallback: if GPU time is active and CPU time is not measured yet, deduce from frame interval
+    if (gpu_lat_us > 0.0 && cpu_lat_us <= 0.0 && ft_ms > 0.0) {
+        double frame_us = ft_ms * 1000.0;
+        if (frame_us > gpu_lat_us) {
+            cpu_lat_us = frame_us - gpu_lat_us;
+        }
+    }
+    if (total_cost_us <= 0.0 && (gpu_lat_us > 0.0 || cpu_lat_us > 0.0)) {
+        total_cost_us = gpu_lat_us + cpu_lat_us;
+    }
+    if (total_cost_us <= 0.0 && ft_ms > 0.0) {
+        total_cost_us = ft_ms * 1000.0;
     }
 
     bool has_lat = (cpu_lat_us > 0.0) || (gpu_lat_us > 0.0) || (total_cost_us > 0.0) || g_config.osd_show_bottleneck;
@@ -2041,8 +2055,8 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
             ImU32 bcol = (bkind == BottleneckKind::GpuBound) ? BADGE_GPU
                        : ((bkind == BottleneckKind::CpuBound) ? BADGE_CPU : BADGE_API);
             DrawBadge(bstr, bcol, scale);
-            ImGui::NewLine();
         }
+        ImGui::NewLine();
     }
 
     // ── Module 6: Pipeline (Frame Gen / Limiter / Adaptive) ──
@@ -2887,10 +2901,12 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, border_sz);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, padding);
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, spacing);
+    float bg_alpha = is_modern ? (std::max)(0.90f, g_config.osd_opacity) : g_config.osd_opacity;
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.24f, 0.32f, 0.40f, 0.55f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.04f, 0.05f, 0.08f, bg_alpha));
 
     ImGui::SetNextWindowPos({px_x, px_y}, ImGuiCond_Always, {pivot_x, pivot_y});
-    ImGui::SetNextWindowBgAlpha(g_config.osd_opacity);
+    ImGui::SetNextWindowBgAlpha(bg_alpha);
 
     if (ImGui::Begin("##limiter_osd", nullptr,
             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize |
@@ -3113,7 +3129,7 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
         ImGui::PopFont();
     }
     ImGui::End();
-    ImGui::PopStyleColor();
+    ImGui::PopStyleColor(2);
     ImGui::PopStyleVar(4);
 }
 
