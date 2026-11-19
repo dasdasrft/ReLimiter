@@ -84,7 +84,8 @@ public:
         double sorted[N];
         for (size_t i = 0; i < count_; i++)
             sorted[i] = ValueOf(data_[Index(i)]);
-        size_t idx = static_cast<size_t>(p * static_cast<double>(count_ - 1));
+        double clamped_p = (p < 0.0) ? 0.0 : ((p > 1.0) ? 1.0 : p);
+        size_t idx = static_cast<size_t>(clamped_p * static_cast<double>(count_ - 1));
         if (idx >= count_) idx = count_ - 1;
         std::nth_element(sorted, sorted + idx, sorted + count_);
         return sorted[idx];

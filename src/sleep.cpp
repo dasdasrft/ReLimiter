@@ -65,9 +65,14 @@ void DoOwnSleep(int64_t target_qpc) {
     }
 
     // ── Phase 2: HW spin ──
-    DWORD_PTR old_aff = SetThreadAffinityMask(
-        GetCurrentThread(),
-        static_cast<DWORD_PTR>(1) << GetCurrentProcessorNumber());
+    DWORD proc_num = GetCurrentProcessorNumber();
+    DWORD_PTR old_aff = 0;
+    constexpr DWORD max_bits = sizeof(DWORD_PTR) * 8;
+    if (proc_num < max_bits) {
+        old_aff = SetThreadAffinityMask(
+            GetCurrentThread(),
+            static_cast<DWORD_PTR>(1) << proc_num);
+    }
 
     // Snapshot TSC and QPC BEFORE spin for drift diagnosis
     uint64_t tsc_before = __rdtsc();
@@ -82,7 +87,9 @@ void DoOwnSleep(int64_t target_qpc) {
     LARGE_INTEGER qpc_after;
     QueryPerformanceCounter(&qpc_after);
 
-    SetThreadAffinityMask(GetCurrentThread(), old_aff);
+    if (old_aff != 0) {
+        SetThreadAffinityMask(GetCurrentThread(), old_aff);
+    }
 
     // ── Overshoot diagnosis ──
     double coarse_us = (coarse_end > coarse_start) ? qpc_to_us(coarse_end - coarse_start) : 0.0;

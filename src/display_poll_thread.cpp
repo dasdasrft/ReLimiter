@@ -36,7 +36,10 @@ static void DisplayPollProc() {
 }
 
 void StartDisplayPollThread() {
+    if (s_poll_running.load(std::memory_order_relaxed)) return;
     s_poll_running.store(true, std::memory_order_relaxed);
+    if (s_poll_thread.joinable())
+        s_poll_thread.join();
     s_poll_thread = std::thread(DisplayPollProc);
 }
 

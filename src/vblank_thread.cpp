@@ -146,6 +146,8 @@ static void VBlankThreadProc() {
 void StartVBlankThread() {
     if (s_vblank_running.load(std::memory_order_relaxed)) return; // already running
     s_vblank_running.store(true, std::memory_order_relaxed);
+    if (s_vblank_thread.joinable())
+        s_vblank_thread.join();
     s_vblank_thread = std::thread(VBlankThreadProc);
 }
 
