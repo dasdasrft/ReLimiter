@@ -1729,9 +1729,9 @@ static void DrawBadge(const char* tag, ImU32 accent_col, float scale, float min_
     ImU32 g = (accent_col >> 8) & 0xFF;
     ImU32 b = (accent_col >> 16) & 0xFF;
 
-    ImU32 bg_col = IM_COL32(r, g, b, 32);       // 12.5% soft tinted frosted glass
-    ImU32 border_col = IM_COL32(r, g, b, 115);  // 45% delicate hairline border
-    ImU32 text_col = IM_COL32(r, g, b, 245);    // crisp readable label
+    ImU32 bg_col = IM_COL32(r, g, b, 48);       // 19% soft tinted frosted glass
+    ImU32 border_col = IM_COL32(r, g, b, 145);  // 57% delicate hairline border
+    ImU32 text_col = IM_COL32(r, g, b, 255);    // crisp readable label
 
     dl->AddRectFilled(p0, p1, bg_col, round_r);
     dl->AddRect(p0, p1, border_col, round_r, 0, 1.0f);
@@ -1742,7 +1742,7 @@ static void DrawBadge(const char* tag, ImU32 accent_col, float scale, float min_
 static void DrawDot(float scale) {
     ImGui::SameLine(0.0f, 4.0f * scale);
     float b = g_config.osd_text_brightness;
-    ImGui::TextColored(ImVec4(0.45f * b, 0.50f * b, 0.58f * b, 0.70f), "·");
+    OSDTextColored(ImVec4(0.70f * b, 0.75f * b, 0.82f * b, 0.85f), "·");
     ImGui::SameLine(0.0f, 4.0f * scale);
 }
 
@@ -2024,6 +2024,7 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
             ImU32 bcol = (bkind == BottleneckKind::GpuBound) ? BADGE_GPU
                        : ((bkind == BottleneckKind::CpuBound) ? BADGE_CPU : BADGE_API);
             DrawBadge(bstr, bcol, scale);
+            ImGui::NewLine();
         }
     }
 
@@ -2916,27 +2917,32 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
             float data_min = 1e9f;
             for (int i = 0; i < FT_HISTORY_SIZE; i++) {
                 float v = s_ft_history[(s_ft_history_idx + i) % FT_HISTORY_SIZE];
-                ordered[i] = v;
-                if (v > 0.0f) {
+                // Clamp freeze / loading pauses in buffer so graph line stays within reasonable view
+                float display_v = (v > 60.0f) ? 60.0f : v;
+                ordered[i] = display_v;
+                if (v > 0.0f && v <= 100.0f) { // ignore loading screen freeze spikes in scale calculation
                     if (v > data_max) data_max = v;
                     if (v < data_min) data_min = v;
                 }
             }
 
             float current = static_cast<float>(ft_ms);
+            if (current > 60.0f) current = 60.0f;
             float ideal_min = (std::max)(0.0f, current - 4.0f);
             float ideal_max = current + 4.0f;
 
             float needed_min = (std::min)(ideal_min, data_min - 1.0f);
             float needed_max = (std::max)(ideal_max, data_max + 1.0f);
             needed_min = (std::max)(0.0f, needed_min);
+            if (needed_max > 50.0f) needed_max = 50.0f; // Limit Y-axis ceiling to 50ms (20 FPS)
 
             if (needed_min < s_graph_scale_min) s_graph_scale_min = needed_min;
-            if (needed_max > s_graph_scale_max) s_graph_scale_max = needed_max;
+            if (needed_max > s_graph_scale_max || s_graph_scale_max > 50.0f) s_graph_scale_max = needed_max;
 
-            s_graph_scale_min += (ideal_min - s_graph_scale_min) * 0.02f;
-            s_graph_scale_max += (ideal_max - s_graph_scale_max) * 0.02f;
+            s_graph_scale_min += (ideal_min - s_graph_scale_min) * 0.05f;
+            s_graph_scale_max += (ideal_max - s_graph_scale_max) * 0.05f;
             s_graph_scale_min = (std::max)(0.0f, s_graph_scale_min);
+            if (s_graph_scale_max > 50.0f) s_graph_scale_max = 50.0f;
             if (s_graph_scale_max < s_graph_scale_min + 2.0f)
                 s_graph_scale_max = s_graph_scale_min + 2.0f;
 
