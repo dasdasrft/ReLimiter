@@ -205,6 +205,7 @@ void LoadConfig(HMODULE hModule) {
     g_config.osd_show_dlss_resolution = ReadINIBool(S, "osd_show_dlss_resolution", false, P);
     g_config.osd_show_dlss_presets   = ReadINIBool(S, "osd_show_dlss_presets", false, P);
     g_config.osd_show_dlss_versions  = ReadINIBool(S, "osd_show_dlss_versions", false, P);
+    g_config.language                = ReadINIString(S, "language", "zh-CN", P);
 
     // Monitor Blackout — keybind loaded from shared file if shared_presets enabled
     g_config.blackout_key            = ReadINIString(S, "blackout_key", "", P);
@@ -369,6 +370,7 @@ void SaveConfig() {
     WriteINIBool(S, "dynamic_mfg_passthrough", g_config.dynamic_mfg_passthrough, P);
 
     // ── Advanced ──
+    WriteINIString(S, "language", g_config.language.c_str(), P);
     WriteINIBool(S, "reflex_inject", g_config.reflex_inject, P);
     WriteINIBool(S, "flip_model_override", g_config.flip_model_override, P);
     WriteINIString(S, "log_level", g_config.log_level.c_str(), P);

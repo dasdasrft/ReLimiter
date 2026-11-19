@@ -127,6 +127,9 @@ struct Config {
     // DLSS Info Hooks — enable NGX CreateFeature/EvaluateFeature interception
     // for DLSS quality, resolution, and feature detection on the OSD.
     // Disable if experiencing crashes related to DLSS pipeline.
+    // Localization
+    std::string language = "zh-CN";
+
     bool dlss_info_hooks = true;
 };
 

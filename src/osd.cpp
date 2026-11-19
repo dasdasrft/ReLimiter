@@ -31,6 +31,7 @@
 #include "dlss_presets.h"
 #include "blackout.h"
 #include "focus_lock.h"
+#include "localization.h"
 #include "logger.h"
 #include <string>
 #include <atomic>
@@ -151,6 +152,33 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
     }
 
     // ════════════════════════════════════════════
+    // LANGUAGE SWITCHER / 语言切换
+    // ════════════════════════════════════════════
+    {
+        ImGui::Text("%s", TR("Language / 语言:", "界面语言 (Language):"));
+        ImGui::SameLine();
+        bool is_zh = IsChinese();
+        if (ImGui::RadioButton("简体中文", is_zh)) {
+            if (!is_zh) {
+                g_config.language = "zh-CN";
+                config_dirty = true;
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("English", !is_zh)) {
+            if (is_zh) {
+                g_config.language = "en-US";
+                config_dirty = true;
+            }
+        }
+        if (is_zh) {
+            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f),
+                "提示: 若中文字符显示为问号，请在 ReShade 的 [Settings] 选项卡中将 [Font] 设置为 C:\\Windows\\Fonts\\msyh.ttc (微软雅黑)");
+        }
+        ImGui::Separator();
+    }
+
+    // ════════════════════════════════════════════
     // SECTION 1: FPS
     // ════════════════════════════════════════════
     // Use a static so the slider value persists across frames while
@@ -177,7 +205,7 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
     }
 
     if (dmfg_dynamic_active) ImGui::BeginDisabled();
-    if (ImGui::RadioButton("VRR Cap", reflex_cap > 0 && target == reflex_cap)) {
+    if (ImGui::RadioButton(TR("VRR Cap", "VRR 自动限帧"), reflex_cap > 0 && target == reflex_cap)) {
         if (reflex_cap > 0) {
             g_user_target_fps.store(reflex_cap, std::memory_order_relaxed);
             g_config.target_fps = reflex_cap;
@@ -186,7 +214,7 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         }
     }
     ImGui::SameLine();
-    if (ImGui::RadioButton("Custom", target > 0 && target != reflex_cap)) {
+    if (ImGui::RadioButton(TR("Custom", "自定义"), target > 0 && target != reflex_cap)) {
         if (target == 0 || target == reflex_cap) {
             target = 60;
             g_user_target_fps.store(target, std::memory_order_relaxed);
@@ -196,7 +224,7 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         }
     }
     ImGui::SameLine();
-    if (ImGui::RadioButton("Off", target == 0)) {
+    if (ImGui::RadioButton(TR("Off", "关闭"), target == 0)) {
         g_user_target_fps.store(0, std::memory_order_relaxed);
         g_config.target_fps = 0;
         s_target_edit = 0;
@@ -204,14 +232,14 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
     }
     if (dmfg_dynamic_active) ImGui::EndDisabled();
     if (reflex_cap > 0) {
-        char tip[128];
+        char tip[256];
         snprintf(tip, sizeof(tip),
-                 "VRR Cap sets your FPS to the Reflex-safe maximum for your display "
-                 "(hz - hz^2/3600). For your monitor that's %d fps.", reflex_cap);
+                 TR("VRR Cap sets your FPS to the Reflex-safe maximum for your display (hz - hz^2/3600). For your monitor that's %d fps.",
+                    "VRR 自动限帧：根据显示器刷新率自动计算防撕裂上限 (刷新率 - 刷新率^2/3600)。当前显示器推荐值为 %d fps。"), reflex_cap);
         HelpTip(tip);
     } else {
-        HelpTip("VRR Cap sets your FPS to the Reflex-safe maximum for your display. "
-                "Display not detected yet.");
+        HelpTip(TR("VRR Cap sets your FPS to the Reflex-safe maximum for your display. Display not detected yet.",
+                   "VRR 自动限帧：根据显示器刷新率自动计算防撕裂上限。尚未检测到显示器。"));
     }
 
     char slider_fmt[32];
@@ -233,30 +261,31 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         ImGui::BeginDisabled();
         char dmfg_fmt[32];
         if (display_target == 0)
-            snprintf(dmfg_fmt, sizeof(dmfg_fmt), "Not set");
+            snprintf(dmfg_fmt, sizeof(dmfg_fmt), "%s", TR("Not set", "未设置"));
         else
             snprintf(dmfg_fmt, sizeof(dmfg_fmt), "%%d");
-        ImGui::SliderInt("Target FPS", &s_target_edit, 0, 500, dmfg_fmt);
+        ImGui::SliderInt(TR("Target FPS", "目标帧率"), &s_target_edit, 0, 500, dmfg_fmt);
         ImGui::EndDisabled();
         s_target_active = false;
 
         if (drs_target == 0x01000000)
             ImGui::TextColored(ImVec4(0.6f, 0.9f, 0.6f, 1.0f),
-                "Dynamic MFG target: Max Refresh Rate (%d fps)", display_target);
+                TR("Dynamic MFG target: Max Refresh Rate (%d fps)", "动态 MFG 目标: 最高刷新率 (%d fps)"), display_target);
         else if (drs_target > 0)
             ImGui::TextColored(ImVec4(0.6f, 0.9f, 0.6f, 1.0f),
-                "Dynamic MFG target: %d fps", drs_target);
+                TR("Dynamic MFG target: %d fps", "动态 MFG 目标: %d fps"), drs_target);
         else
             ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f),
-                "No target set. Set via RHI, NVIDIA App, or Profile Inspector.");
+                TR("No target set. Set via RHI, NVIDIA App, or Profile Inspector.",
+                   "未设置目标。请在 RHI、NVIDIA App 或 Profile Inspector 中配置。"));
     } else {
         if (s_target_edit == 0)
-            snprintf(slider_fmt, sizeof(slider_fmt), "Off");
+            snprintf(slider_fmt, sizeof(slider_fmt), "%s", TR("Off", "关闭"));
         else if (s_target_edit == reflex_cap && reflex_cap > 0)
-            snprintf(slider_fmt, sizeof(slider_fmt), "%%d (VRR)");
+            snprintf(slider_fmt, sizeof(slider_fmt), "%s", TR("%d (VRR)", "%d (VRR 限帧)"));
         else
             snprintf(slider_fmt, sizeof(slider_fmt), "%%d");
-        ImGui::SliderInt("Target FPS", &s_target_edit, 0, 360, slider_fmt);
+        ImGui::SliderInt(TR("Target FPS", "目标帧率"), &s_target_edit, 0, 360, slider_fmt);
         s_target_active = ImGui::IsItemActive();
         if (ImGui::IsItemDeactivatedAfterEdit()) {
             if (s_target_edit > 0 && s_target_edit < 30) s_target_edit = 30;
@@ -266,10 +295,11 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         }
     }
     if (dmfg_dynamic_active)
-        HelpTip("Dynamic MFG is active. The FPS target is controlled by the driver profile. "
-                "Set it via RHI, NVIDIA App, or Profile Inspector before launching the game.");
+        HelpTip(TR("Dynamic MFG is active. The FPS target is controlled by the driver profile. Set it via RHI, NVIDIA App, or Profile Inspector before launching the game.",
+                   "动态 MFG 已激活。目标帧率受驱动程序配置文件控制。请在启动游戏前通过 RHI、NVIDIA App 或 Profile Inspector 设置。"));
     else
-        HelpTip("The FPS the limiter will target. 0 = no limiting. Minimum is 30.");
+        HelpTip(TR("The FPS the limiter will target. 0 = no limiting. Minimum is 30.",
+                   "帧率限制器的目标 FPS。0 为不限帧，最低限制为 30。"));
 
     if (!dmfg_dynamic_active) {
         for (int p : {30, 60, 120, 240}) {
@@ -292,10 +322,10 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         s_bg_edit = g_background_fps.load(std::memory_order_relaxed);
     char bg_fmt[32];
     if (s_bg_edit == 0)
-        snprintf(bg_fmt, sizeof(bg_fmt), "Uncapped");
+        snprintf(bg_fmt, sizeof(bg_fmt), "%s", TR("Uncapped", "不限"));
     else
         snprintf(bg_fmt, sizeof(bg_fmt), "%%d");
-    ImGui::SliderInt("Background FPS", &s_bg_edit, 0, 60, bg_fmt);
+    ImGui::SliderInt(TR("Background FPS", "后台帧率限制"), &s_bg_edit, 0, 60, bg_fmt);
     s_bg_active = ImGui::IsItemActive();
     if (ImGui::IsItemDeactivatedAfterEdit()) {
         if (s_bg_edit > 0 && s_bg_edit < 20) s_bg_edit = 20;
@@ -303,7 +333,8 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         g_config.background_fps = s_bg_edit;
         config_dirty = true;
     }
-    HelpTip("FPS cap when the game window loses focus. 0 = uncapped. Minimum is 20.");
+    HelpTip(TR("FPS cap when the game window loses focus. 0 = uncapped. Minimum is 20.",
+               "当游戏窗口失去焦点（切到后台）时的帧率限制。0 为不限帧，最低为 20。"));
 
     ImGui::Spacing();
 #ifdef _WIN64
@@ -313,10 +344,10 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         s_fgoff_edit = g_fg_off_fps.load(std::memory_order_relaxed);
     char fgoff_fmt[32];
     if (s_fgoff_edit == 0)
-        snprintf(fgoff_fmt, sizeof(fgoff_fmt), "Off");
+        snprintf(fgoff_fmt, sizeof(fgoff_fmt), "%s", TR("Off", "关闭"));
     else
         snprintf(fgoff_fmt, sizeof(fgoff_fmt), "%%d");
-    ImGui::SliderInt("FG-Off Cap", &s_fgoff_edit, 0, 120, fgoff_fmt);
+    ImGui::SliderInt(TR("FG-Off Cap", "关闭插帧时限帧"), &s_fgoff_edit, 0, 120, fgoff_fmt);
     s_fgoff_active = ImGui::IsItemActive();
     if (ImGui::IsItemDeactivatedAfterEdit()) {
         if (s_fgoff_edit > 0 && s_fgoff_edit < 30) s_fgoff_edit = 30;
@@ -324,17 +355,20 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         g_config.fg_off_fps = s_fgoff_edit;
         config_dirty = true;
     }
-    HelpTip("FPS cap when Frame Generation is disabled (menus, pauses). 0 = off. Prevents GPU ramp-up on uncapped non-FG frames.");
+    HelpTip(TR("FPS cap when Frame Generation is disabled (menus, pauses). 0 = off. Prevents GPU ramp-up on uncapped non-FG frames.",
+               "当插帧功能关闭时（如菜单、暂停界面）的帧率限制。0 为关闭。防止菜单等无插帧场景显卡满载发热。"));
 #endif
 
     ImGui::Spacing();
     {
-        const char* vsync_labels[] = {"Game", "Off", "On"};
+        const char* vsync_labels_en[] = {"Game", "Off", "On"};
+        const char* vsync_labels_zh[] = {"跟随游戏", "强制关闭", "强制开启"};
+        const char** vsync_labels = IsChinese() ? vsync_labels_zh : vsync_labels_en;
         int current_vsync = 0;
         if (g_config.vsync_mode == "off") current_vsync = 1;
         else if (g_config.vsync_mode == "on") current_vsync = 2;
 
-        if (ImGui::BeginCombo("VSync", vsync_labels[current_vsync])) {
+        if (ImGui::BeginCombo(TR("VSync", "垂直同步"), vsync_labels[current_vsync])) {
             for (int i = 0; i < 3; i++) {
                 bool selected = (current_vsync == i);
                 if (ImGui::Selectable(vsync_labels[i], selected)) {
@@ -349,50 +383,51 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
             }
             ImGui::EndCombo();
         }
-        HelpTip("Game = use the game's VSync setting. Off = force VSync off (recommended with frame limiter). On = force VSync on.");
+        HelpTip(TR("Game = use the game's VSync setting. Off = force VSync off (recommended with frame limiter). On = force VSync on.",
+                   "跟随游戏 = 使用游戏内设置；强制关闭 = 强行关闭垂直同步（推荐搭配限帧器使用）；强制开启 = 强行开启垂直同步。"));
     }
 
     // ════════════════════════════════════════════
     // SECTION 2: OSD (collapsible)
     // ════════════════════════════════════════════
     ImGui::Separator();
-    if (ImGui::CollapsingHeader("OSD")) {
-        if (ImGui::Checkbox("Show OSD", &g_config.osd_enabled)) config_dirty = true;
-        HelpTip("Toggle the in-game overlay on or off.");
+    if (ImGui::CollapsingHeader(TR("OSD", "OSD 监控面板"))) {
+        if (ImGui::Checkbox(TR("Show OSD", "启用 OSD 显示"), &g_config.osd_enabled)) config_dirty = true;
+        HelpTip(TR("Toggle the in-game overlay on or off.", "开启或关闭游戏内 OSD 监控面板。"));
         float osd_x_pct = g_config.osd_x * 100.0f;
         float osd_y_pct = g_config.osd_y * 100.0f;
-        if (ImGui::SliderFloat("OSD X", &osd_x_pct, 0.0f, 100.0f, "%.1f%%"))
+        if (ImGui::SliderFloat(TR("OSD X", "水平位置 X"), &osd_x_pct, 0.0f, 100.0f, "%.1f%%"))
             g_config.osd_x = osd_x_pct / 100.0f;
         if (ImGui::IsItemDeactivatedAfterEdit()) config_dirty = true;
-        HelpTip("Horizontal position of the overlay as a percentage of screen width.");
-        if (ImGui::SliderFloat("OSD Y", &osd_y_pct, 0.0f, 100.0f, "%.1f%%"))
+        HelpTip(TR("Horizontal position of the overlay as a percentage of screen width.", "OSD 面板在屏幕上的横向位置百分比。"));
+        if (ImGui::SliderFloat(TR("OSD Y", "垂直位置 Y"), &osd_y_pct, 0.0f, 100.0f, "%.1f%%"))
             g_config.osd_y = osd_y_pct / 100.0f;
         if (ImGui::IsItemDeactivatedAfterEdit()) config_dirty = true;
-        HelpTip("Vertical position of the overlay as a percentage of screen height.");
-        ImGui::SliderFloat("OSD Opacity", &g_config.osd_opacity, 0.0f, 1.0f, "%.2f");
+        HelpTip(TR("Vertical position of the overlay as a percentage of screen height.", "OSD 面板在屏幕上的纵向位置百分比。"));
+        ImGui::SliderFloat(TR("OSD Opacity", "背景不透明度"), &g_config.osd_opacity, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemDeactivatedAfterEdit()) config_dirty = true;
-        HelpTip("Background transparency of the overlay. 0 = fully transparent, 1 = fully opaque.");
+        HelpTip(TR("Background transparency of the overlay. 0 = fully transparent, 1 = fully opaque.", "OSD 监控面板的背景透明度。0 为完全透明，1 为纯色背景。"));
 
         // ── Appearance ──
         ImGui::Spacing();
-        ImGui::Text("Appearance");
+        ImGui::Text("%s", TR("Appearance", "外观设置"));
         float scale_pct = g_config.osd_scale * 100.0f;
-        if (ImGui::SliderFloat("OSD Scale", &scale_pct, 50.0f, 200.0f, "%.0f%%"))
+        if (ImGui::SliderFloat(TR("OSD Scale", "缩放比例"), &scale_pct, 50.0f, 200.0f, "%.0f%%"))
             g_config.osd_scale = scale_pct / 100.0f;
         if (ImGui::IsItemDeactivatedAfterEdit()) config_dirty = true;
-        HelpTip("Scale the entire OSD overlay. 100%% is default size.");
-        if (ImGui::Checkbox("Drop Shadow", &g_config.osd_drop_shadow)) config_dirty = true;
-        HelpTip("Draw a shadow behind OSD text for better readability.");
-        ImGui::SliderFloat("Text Brightness", &g_config.osd_text_brightness, 0.0f, 1.0f, "%.2f");
+        HelpTip(TR("Scale the entire OSD overlay. 100% is default size.", "整体缩放 OSD 监控面板。100% 为默认标准大小。"));
+        if (ImGui::Checkbox(TR("Drop Shadow", "文字阴影"), &g_config.osd_drop_shadow)) config_dirty = true;
+        HelpTip(TR("Draw a shadow behind OSD text for better readability.", "在 OSD 文字后方绘制阴影轮廓，增强各种游戏背景下的可读性。"));
+        ImGui::SliderFloat(TR("Text Brightness", "文字亮度"), &g_config.osd_text_brightness, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemDeactivatedAfterEdit()) config_dirty = true;
-        HelpTip("Brightness of the OSD text. 1.0 = full white, 0.0 = black.");
+        HelpTip(TR("Brightness of the OSD text. 1.0 = full white, 0.0 = black.", "OSD 文字亮度。1.0 为纯白，0.0 为纯黑。"));
 
         // ── Presets ──
         ImGui::Spacing();
-        ImGui::Text("Presets");
+        ImGui::Text("%s", TR("Presets", "快捷预设"));
 
         // Built-in presets
-        if (ImGui::Button("Min")) {
+        if (ImGui::Button(TR("Min", "极简"))) {
             // Minimal: FPS + Frametime + GPU Temp
             OSDPreset p = {};
             p.show_fps = true;
@@ -402,7 +437,7 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
             config_dirty = true;
         }
         ImGui::SameLine();
-        if (ImGui::Button("Med")) {
+        if (ImGui::Button(TR("Med", "均衡"))) {
             // Medium: core diagnostics
             OSDPreset p = {};
             p.show_fps = true;
@@ -420,7 +455,7 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
             config_dirty = true;
         }
         ImGui::SameLine();
-        if (ImGui::Button("Full")) {
+        if (ImGui::Button(TR("Full", "全量"))) {
             // Full: everything on
             OSDPreset p = {};
             p.show_fps = true;
@@ -478,7 +513,7 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
                 snprintf(ctx_id, sizeof(ctx_id), "##preset_ctx_%d", i);
                 if (ImGui::BeginPopupContextItem(ctx_id)) {
                     char del_label[48];
-                    snprintf(del_label, sizeof(del_label), "Delete \"%s\"", slot.name);
+                    snprintf(del_label, sizeof(del_label), TR("Delete \"%s\"", "删除 \"%s\""), slot.name);
                     if (ImGui::Selectable(del_label)) {
                         OSDPreset_DeleteSlot(i);
                         config_dirty = true;
@@ -514,42 +549,42 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
             static bool s_save_popup = false;
 
             ImGui::SameLine();
-            if (ImGui::Button("Save")) {
+            if (ImGui::Button(TR("Save", "保存"))) {
                 s_save_popup = true;
                 s_save_slot = 0;
                 snprintf(s_save_name, sizeof(s_save_name), "Preset %d",
                          s_save_slot + 1);
             }
-            HelpTip("Save the current OSD element selection to a user preset slot.");
+            HelpTip(TR("Save the current OSD element selection to a user preset slot.", "将当前选中的 OSD 监控项目保存到自定义预设槽位。"));
 
             if (s_save_popup) {
                 ImGui::OpenPopup("Save OSD Preset");
                 s_save_popup = false;
             }
             if (ImGui::BeginPopup("Save OSD Preset")) {
-                ImGui::Text("Save current OSD layout:");
-                ImGui::InputText("Name", s_save_name, sizeof(s_save_name));
+                ImGui::Text("%s", TR("Save current OSD layout:", "保存当前 OSD 布局配置:"));
+                ImGui::InputText(TR("Name", "预设名称"), s_save_name, sizeof(s_save_name));
                 // Slot selector — dynamic count
                 int count = OSDPreset_GetCount();
                 if (s_save_slot >= count) s_save_slot = count - 1;
                 if (s_save_slot < 0) s_save_slot = 0;
-                if (ImGui::BeginCombo("Slot", s_save_slot < count ?
+                if (ImGui::BeginCombo(TR("Slot", "槽位"), s_save_slot < count ?
                         (OSDPreset_GetSlot(s_save_slot).occupied ?
                          OSDPreset_GetSlot(s_save_slot).name : "---") : "---")) {
                     for (int i = 0; i < count; i++) {
                         char slot_label[48];
                         OSDPreset& s = OSDPreset_GetSlot(i);
                         if (s.occupied)
-                            snprintf(slot_label, sizeof(slot_label), "Slot %d: %s", i + 1, s.name);
+                            snprintf(slot_label, sizeof(slot_label), TR("Slot %d: %s", "槽位 %d: %s"), i + 1, s.name);
                         else
-                            snprintf(slot_label, sizeof(slot_label), "Slot %d: ---", i + 1);
+                            snprintf(slot_label, sizeof(slot_label), TR("Slot %d: ---", "槽位 %d: 空"), i + 1);
                         if (ImGui::Selectable(slot_label, s_save_slot == i))
                             s_save_slot = i;
                     }
                     ImGui::EndCombo();
                 }
                 ImGui::Spacing();
-                if (ImGui::Button("Save##confirm", ImVec2(80, 0))) {
+                if (ImGui::Button(TR("Save##confirm", "保存##confirm"), ImVec2(80, 0))) {
                     OSDPreset& slot = OSDPreset_GetSlot(s_save_slot);
                     slot = OSDPreset_FromConfig();
                     snprintf(slot.name, sizeof(slot.name), "%s", s_save_name);
@@ -558,7 +593,7 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
                     ImGui::CloseCurrentPopup();
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+                if (ImGui::Button(TR("Cancel", "取消"), ImVec2(80, 0))) {
                     ImGui::CloseCurrentPopup();
                 }
                 ImGui::EndPopup();
@@ -573,27 +608,27 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
             ImGui::SameLine();
             if (OSDPreset_HasDefault()) {
                 char def_label[48];
-                snprintf(def_label, sizeof(def_label), "Default: %s", OSDPreset_GetDefault().name);
+                snprintf(def_label, sizeof(def_label), TR("Default: %s", "默认: %s"), OSDPreset_GetDefault().name);
                 ImGui::TextDisabled("%s", def_label);
                 ImGui::SameLine();
-                if (ImGui::Button("Update##default_preset")) {
+                if (ImGui::Button(TR("Update##default_preset", "更新##default_preset"))) {
                     OSDPreset p = OSDPreset_FromConfig();
                     snprintf(p.name, sizeof(p.name), "%s", OSDPreset_GetDefault().name);
                     OSDPreset_SaveDefault(p);
                 }
-                HelpTip("Update the default preset with the current OSD layout. Applied automatically on launch for every game.");
+                HelpTip(TR("Update the default preset with the current OSD layout. Applied automatically on launch for every game.", "将当前 OSD 布局更新为默认预设。所有游戏启动时将自动应用。"));
                 ImGui::SameLine();
-                if (ImGui::Button("Clear##default_preset")) {
+                if (ImGui::Button(TR("Clear##default_preset", "清除##default_preset"))) {
                     OSDPreset_ClearDefault();
                 }
-                HelpTip("Remove the default preset. Games will use their own saved OSD layout.");
+                HelpTip(TR("Remove the default preset. Games will use their own saved OSD layout.", "移除默认预设。各游戏将使用各自保存的独立 OSD 布局。"));
             } else {
-                if (ImGui::Button("Set as Default##default_preset")) {
+                if (ImGui::Button(TR("Set as Default##default_preset", "设为默认##default_preset"))) {
                     OSDPreset p = OSDPreset_FromConfig();
                     snprintf(p.name, sizeof(p.name), "Default");
                     OSDPreset_SaveDefault(p);
                 }
-                HelpTip("Save the current OSD layout as the default. It will be applied automatically on launch for every game using the shared presets file.");
+                HelpTip(TR("Save the current OSD layout as the default. It will be applied automatically on launch for every game using the shared presets file.", "将当前 OSD 布局设为全局默认预设。"));
             }
         }
 
@@ -652,12 +687,12 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
             // Prev Preset keybind
             {
                 static bool s_capturing = false;
-                ImGui::Text("Prev Preset:");
+                ImGui::Text("%s", TR("Prev Preset:", "上一预设热键:"));
                 ImGui::SameLine();
                 if (s_capturing) {
-                    ImGui::TextColored(ImVec4(1,1,0.3f,1), "Press key...");
+                    ImGui::TextColored(ImVec4(1,1,0.3f,1), "%s", TR("Press key...", "请按键..."));
                     ImGui::SameLine();
-                    if (ImGui::Button("Cancel##prev")) s_capturing = false;
+                    if (ImGui::Button(TR("Cancel##prev", "取消##prev"))) s_capturing = false;
                     for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; k++) {
                         ImGuiKey key = static_cast<ImGuiKey>(k);
                         if (key == ImGuiKey_LeftCtrl || key == ImGuiKey_RightCtrl) continue;
@@ -681,12 +716,12 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
                         }
                     }
                 } else {
-                    ImGui::Text("%s", g_config.osd_preset_prev_key.empty() ? "None" : g_config.osd_preset_prev_key.c_str());
+                    ImGui::Text("%s", g_config.osd_preset_prev_key.empty() ? TR("None", "无") : g_config.osd_preset_prev_key.c_str());
                     ImGui::SameLine();
-                    if (ImGui::Button("Bind##prev")) s_capturing = true;
+                    if (ImGui::Button(TR("Bind##prev", "绑定##prev"))) s_capturing = true;
                     if (!g_config.osd_preset_prev_key.empty()) {
                         ImGui::SameLine();
-                        if (ImGui::Button("Clear##prev")) {
+                        if (ImGui::Button(TR("Clear##prev", "清除##prev"))) {
                             g_config.osd_preset_prev_key.clear();
                             config_dirty = true;
                         }
@@ -697,12 +732,12 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
             // Next Preset keybind
             {
                 static bool s_capturing = false;
-                ImGui::Text("Next Preset:");
+                ImGui::Text("%s", TR("Next Preset:", "下一预设热键:"));
                 ImGui::SameLine();
                 if (s_capturing) {
-                    ImGui::TextColored(ImVec4(1,1,0.3f,1), "Press key...");
+                    ImGui::TextColored(ImVec4(1,1,0.3f,1), "%s", TR("Press key...", "请按键..."));
                     ImGui::SameLine();
-                    if (ImGui::Button("Cancel##next")) s_capturing = false;
+                    if (ImGui::Button(TR("Cancel##next", "取消##next"))) s_capturing = false;
                     for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; k++) {
                         ImGuiKey key = static_cast<ImGuiKey>(k);
                         if (key == ImGuiKey_LeftCtrl || key == ImGuiKey_RightCtrl) continue;
@@ -726,12 +761,12 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
                         }
                     }
                 } else {
-                    ImGui::Text("%s", g_config.osd_preset_next_key.empty() ? "None" : g_config.osd_preset_next_key.c_str());
+                    ImGui::Text("%s", g_config.osd_preset_next_key.empty() ? TR("None", "无") : g_config.osd_preset_next_key.c_str());
                     ImGui::SameLine();
-                    if (ImGui::Button("Bind##next")) s_capturing = true;
+                    if (ImGui::Button(TR("Bind##next", "绑定##next"))) s_capturing = true;
                     if (!g_config.osd_preset_next_key.empty()) {
                         ImGui::SameLine();
-                        if (ImGui::Button("Clear##next")) {
+                        if (ImGui::Button(TR("Clear##next", "清除##next"))) {
                             g_config.osd_preset_next_key.clear();
                             config_dirty = true;
                         }
@@ -742,12 +777,12 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
             // Move OSD (corner cycling) keybind + button
             {
                 static bool s_capturing = false;
-                ImGui::Text("Move OSD:");
+                ImGui::Text("%s", TR("Move OSD:", "轮换位置:"));
                 ImGui::SameLine();
                 if (s_capturing) {
-                    ImGui::TextColored(ImVec4(1,1,0.3f,1), "Press key...");
+                    ImGui::TextColored(ImVec4(1,1,0.3f,1), "%s", TR("Press key...", "请按键..."));
                     ImGui::SameLine();
-                    if (ImGui::Button("Cancel##pos")) s_capturing = false;
+                    if (ImGui::Button(TR("Cancel##pos", "取消##pos"))) s_capturing = false;
                     for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; k++) {
                         ImGuiKey key = static_cast<ImGuiKey>(k);
                         if (key == ImGuiKey_LeftCtrl || key == ImGuiKey_RightCtrl) continue;
@@ -771,23 +806,23 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
                         }
                     }
                 } else {
-                    ImGui::Text("%s", g_config.osd_position_cycle_key.empty() ? "None" : g_config.osd_position_cycle_key.c_str());
+                    ImGui::Text("%s", g_config.osd_position_cycle_key.empty() ? TR("None", "无") : g_config.osd_position_cycle_key.c_str());
                     ImGui::SameLine();
-                    if (ImGui::Button("Bind##pos")) s_capturing = true;
+                    if (ImGui::Button(TR("Bind##pos", "绑定##pos"))) s_capturing = true;
                     if (!g_config.osd_position_cycle_key.empty()) {
                         ImGui::SameLine();
-                        if (ImGui::Button("Clear##pos")) {
+                        if (ImGui::Button(TR("Clear##pos", "清除##pos"))) {
                             g_config.osd_position_cycle_key.clear();
                             config_dirty = true;
                         }
                     }
                     ImGui::SameLine();
-                    if (ImGui::Button("Move##pos_now")) {
+                    if (ImGui::Button(TR("Move##pos_now", "轮换##pos_now"))) {
                         // Cycle through corners: top-right → bottom-right → bottom-left → top-left → top-right
                         OSD_CyclePosition();
                         config_dirty = true;
                     }
-                    HelpTip("Cycle the OSD position through each corner of the screen (clockwise).");
+                    HelpTip(TR("Cycle the OSD position through each corner of the screen (clockwise).", "顺时针将 OSD 面板轮换到屏幕的四个角落。"));
                 }
             }
         }
@@ -812,61 +847,61 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         };
 
         ImGui::Spacing();
-        ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.9f, 1.0f), "Performance");
-        if (ImGui::Checkbox("FPS##osd_elem", &g_config.osd_show_fps)) config_dirty = true;
-        HelpTip("Show the current FPS. When Frame Generation is active, shows both output and render FPS.");
+        ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.9f, 1.0f), "%s", TR("Performance", "性能指标"));
+        if (ImGui::Checkbox(TR("FPS##osd_elem", "帧率 (FPS)##osd_elem"), &g_config.osd_show_fps)) config_dirty = true;
+        HelpTip(TR("Show the current FPS. When Frame Generation is active, shows both output and render FPS.", "显示当前实时帧率。当开启插帧时，同时显示显示帧率与真实渲染帧率。"));
         FlowSeparator();
-        if (ImGui::Checkbox("1%% Low##osd_elem", &g_config.osd_show_1pct_low)) config_dirty = true;
-        HelpTip("Show the 1%% low FPS over a rolling window. Uses display FPS when Frame Generation is active.");
+        if (ImGui::Checkbox(TR("1%% Low##osd_elem", "1% 低帧##osd_elem"), &g_config.osd_show_1pct_low)) config_dirty = true;
+        HelpTip(TR("Show the 1%% low FPS over a rolling window. Uses display FPS when Frame Generation is active.", "显示滑动窗口内的 1% 最低帧率。开启插帧时对应实际呈现帧率。"));
         FlowSeparator();
-        if (ImGui::Checkbox("0.1%% Low##osd_elem", &g_config.osd_show_0_1pct_low)) config_dirty = true;
-        HelpTip("Show the 0.1%% low FPS over a rolling window. Requires more samples than 1%% low to stabilize.");
+        if (ImGui::Checkbox(TR("0.1%% Low##osd_elem", "0.1% 低帧##osd_elem"), &g_config.osd_show_0_1pct_low)) config_dirty = true;
+        HelpTip(TR("Show the 0.1%% low FPS over a rolling window. Requires more samples than 1%% low to stabilize.", "显示滑动窗口内的 0.1% 极限低帧率，比 1% 低帧需要更多采样来稳定。"));
         FlowSeparator();
-        if (ImGui::Checkbox("Frametime##osd_elem", &g_config.osd_show_frametime)) config_dirty = true;
-        HelpTip("Show the current frame time in milliseconds.");
+        if (ImGui::Checkbox(TR("Frametime##osd_elem", "帧生成时间##osd_elem"), &g_config.osd_show_frametime)) config_dirty = true;
+        HelpTip(TR("Show the current frame time in milliseconds.", "以毫秒 (ms) 为单位显示当前帧生成时间。"));
         FlowSeparator();
-        if (ImGui::Checkbox("Frametime Graph##osd_elem", &g_config.osd_show_frametime_graph)) config_dirty = true;
-        HelpTip("Show a rolling graph of recent frame times.");
+        if (ImGui::Checkbox(TR("Frametime Graph##osd_elem", "帧时间走势图##osd_elem"), &g_config.osd_show_frametime_graph)) config_dirty = true;
+        HelpTip(TR("Show a rolling graph of recent frame times.", "显示近期帧时间的平滑波动曲线走势图。"));
 
         ImGui::Spacing();
 #ifdef _WIN64
-        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "Latency");
-        if (ImGui::Checkbox("CPU Latency##osd_elem", &g_config.osd_show_cpu_latency)) config_dirty = true;
-        HelpTip("CPU pipeline time: SIM_START to RENDERSUBMIT_END. Measures how long the CPU spends on simulation + render submission.");
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "%s", TR("Latency", "延迟与耗时"));
+        if (ImGui::Checkbox(TR("CPU Latency##osd_elem", "CPU 提交延迟##osd_elem"), &g_config.osd_show_cpu_latency)) config_dirty = true;
+        HelpTip(TR("CPU pipeline time: SIM_START to RENDERSUBMIT_END. Measures how long the CPU spends on simulation + render submission.", "CPU 管线耗时：从模拟开始到渲染指令提交结束。测量 CPU 在逻辑与提交上的耗时。"));
         FlowSeparator();
-        if (ImGui::Checkbox("GPU Render##osd_elem", &g_config.osd_show_gpu_render_time)) config_dirty = true;
-        HelpTip("GPU active render time in ms. Shows actual GPU work excluding idle bubbles. DX12+Reflex only.");
+        if (ImGui::Checkbox(TR("GPU Render##osd_elem", "GPU 渲染耗时##osd_elem"), &g_config.osd_show_gpu_render_time)) config_dirty = true;
+        HelpTip(TR("GPU active render time in ms. Shows actual GPU work excluding idle bubbles. (AMD/Intel/NVIDIA supported)", "GPU 纯活跃渲染耗时 (毫秒)。展示 GPU 纯渲染负载（支持 AMD/Intel/NVIDIA 显卡）。"));
         FlowSeparator();
-        if (ImGui::Checkbox("Frame Cost##osd_elem", &g_config.osd_show_total_frame_cost)) config_dirty = true;
-        HelpTip("Total frame cost: sim + render + GPU. The real cost of a frame before limiter sleep. DX12+Reflex only.");
+        if (ImGui::Checkbox(TR("Frame Cost##osd_elem", "整帧总开销##osd_elem"), &g_config.osd_show_total_frame_cost)) config_dirty = true;
+        HelpTip(TR("Total frame cost: sim + render + GPU. The real cost of a frame before limiter sleep. DX12+Reflex only.", "整帧总耗时：模拟 + 提交 + 渲染。限帧器休眠前的实际帧开销。"));
         FlowSeparator();
-        if (ImGui::Checkbox("FG Time##osd_elem", &g_config.osd_show_fg_time)) config_dirty = true;
-        HelpTip("DLSS Frame Generation time. Only appears when FG is active. Shows the FG overhead per frame. DX12+Reflex only.");
+        if (ImGui::Checkbox(TR("FG Time##osd_elem", "插帧计算耗时##osd_elem"), &g_config.osd_show_fg_time)) config_dirty = true;
+        HelpTip(TR("DLSS Frame Generation time. Only appears when FG is active. Shows the FG overhead per frame. DX12+Reflex only.", "DLSS 插帧计算耗时。仅在开启插帧时显示，展示每帧插帧所需开销。"));
 #endif
 
         ImGui::Spacing();
-        ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "Quality");
-        if (ImGui::Checkbox("PQI##osd_elem", &g_config.osd_show_pqi)) config_dirty = true;
-        HelpTip("Pacing Quality Index: a 0-100%% composite score. Green=great, yellow=ok, red=poor.");
+        ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "%s", TR("Quality", "画质与平滑度"));
+        if (ImGui::Checkbox(TR("PQI##osd_elem", "节奏质量得分 (PQI)##osd_elem"), &g_config.osd_show_pqi)) config_dirty = true;
+        HelpTip(TR("Pacing Quality Index: a 0-100% composite score. Green=great, yellow=ok, red=poor.", "帧节奏质量指数：0-100% 综合得分。绿色=优秀，黄色=良好，红色=较差。"));
         if (g_config.osd_show_pqi) {
             ImGui::SameLine();
             ImGui::TextDisabled("-");
             ImGui::SameLine();
-            if (ImGui::Checkbox("Breakdown##osd_elem", &g_config.osd_show_pqi_breakdown)) config_dirty = true;
-            HelpTip("Show individual PQI sub-scores: cadence, stutter, and deadline.");
+            if (ImGui::Checkbox(TR("Breakdown##osd_elem", "细项得分##osd_elem"), &g_config.osd_show_pqi_breakdown)) config_dirty = true;
+            HelpTip(TR("Show individual PQI sub-scores: cadence, stutter, and deadline.", "显示 PQI 细项：节奏 (Cadence)、卡顿 (Stutter)、截止时间达成率 (Deadline)。"));
         }
         FlowSeparator();
-        if (ImGui::Checkbox("Smoothness##osd_elem", &g_config.osd_show_smoothness)) config_dirty = true;
-        HelpTip("Frame interval deviation from target in milliseconds. Lower = smoother. Green < 0.5ms, yellow < 1.5ms, red above. EMA-smoothed, skips loading screen outliers.");
+        if (ImGui::Checkbox(TR("Smoothness##osd_elem", "抖动偏差 (平滑度)##osd_elem"), &g_config.osd_show_smoothness)) config_dirty = true;
+        HelpTip(TR("Frame interval deviation from target in milliseconds. Lower = smoother. Green < 0.5ms, yellow < 1.5ms, red above. EMA-smoothed, skips loading screen outliers.", "帧间隔偏离目标值的抖动绝对差（毫秒）。数值越小越平滑。绿色 < 0.5ms，黄色 < 1.5ms，红色超出。"));
 
 #ifdef _WIN64
         ImGui::Spacing();
-        ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "Pipeline");
-        if (ImGui::Checkbox("Frame Generation##osd_elem", &g_config.osd_show_fg)) config_dirty = true;
-        HelpTip("Show FG mode and multiplier (DLSS FG, Dynamic MFG, Smooth Motion).");
+        ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "%s", TR("Pipeline", "渲染管线"));
+        if (ImGui::Checkbox(TR("Frame Generation##osd_elem", "插帧状态 (FG)##osd_elem"), &g_config.osd_show_fg)) config_dirty = true;
+        HelpTip(TR("Show FG mode and multiplier (DLSS FG, Dynamic MFG, Smooth Motion).", "显示插帧模式与倍率（如 DLSS FG、Dynamic MFG、AFMF/Smooth Motion）。"));
         FlowSeparator();
-        if (ImGui::Checkbox("Limiter / Tier##osd_elem", &g_config.osd_show_limiter)) config_dirty = true;
-        HelpTip("Show how much time the limiter added and the current degradation tier (T0=full, T4=suspended).");
+        if (ImGui::Checkbox(TR("Limiter / Tier##osd_elem", "限帧器/休眠等级##osd_elem"), &g_config.osd_show_limiter)) config_dirty = true;
+        HelpTip(TR("Show how much time the limiter added and the current degradation tier (T0=full, T4=suspended).", "显示限帧器注入的等待时间以及当前的降级保护等级 (T0=全量, T4=暂停)。"));
 #endif
 
         {
@@ -874,45 +909,45 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         if (dlss_check.available) {
         ImGui::Spacing();
         ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f), "DLSS");
-        if (ImGui::Checkbox("Quality Level##osd_elem", &g_config.osd_show_dlss_quality)) config_dirty = true;
-        HelpTip("DLSS quality mode (DLAA/Quality/Balanced/Performance/Ultra Perf). Requires DLSS game.");
+        if (ImGui::Checkbox(TR("Quality Level##osd_elem", "画质模式##osd_elem"), &g_config.osd_show_dlss_quality)) config_dirty = true;
+        HelpTip(TR("DLSS quality mode (DLAA/Quality/Balanced/Performance/Ultra Perf). Requires DLSS game.", "DLSS 画质模式 (DLAA/质量/平衡/性能/超性能)。"));
         FlowSeparator();
-        if (ImGui::Checkbox("Features##osd_elem", &g_config.osd_show_dlss_features)) config_dirty = true;
-        HelpTip("Active DLSS features: SR or RR (mutually exclusive) plus FG if active.");
+        if (ImGui::Checkbox(TR("Features##osd_elem", "特性状态##osd_elem"), &g_config.osd_show_dlss_features)) config_dirty = true;
+        HelpTip(TR("Active DLSS features: SR or RR (mutually exclusive) plus FG if active.", "当前启用的 DLSS 特性：SR 超分辨率或 RR 光线重建，以及 FG 插帧。"));
         FlowSeparator();
-        if (ImGui::Checkbox("Resolution##osd_elem", &g_config.osd_show_dlss_resolution)) config_dirty = true;
-        HelpTip("DLSS render resolution and output resolution. Shows DRS resolution when active.");
+        if (ImGui::Checkbox(TR("Resolution##osd_elem", "渲染分辨率##osd_elem"), &g_config.osd_show_dlss_resolution)) config_dirty = true;
+        HelpTip(TR("DLSS render resolution and output resolution. Shows DRS resolution when active.", "DLSS 内部渲染分辨率与最终输出分辨率。"));
         FlowSeparator();
-        if (ImGui::Checkbox("Presets##osd_elem", &g_config.osd_show_dlss_presets)) config_dirty = true;
-        HelpTip("DLSS SR preset (game-set hint) and driver override presets for SR/RR/FG if active.");
+        if (ImGui::Checkbox(TR("Presets##osd_elem", "模型预设##osd_elem"), &g_config.osd_show_dlss_presets)) config_dirty = true;
+        HelpTip(TR("DLSS SR preset (game-set hint) and driver override presets for SR/RR/FG if active.", "DLSS 内部模型预设 (A-K) 及驱动层覆盖预设。"));
         FlowSeparator();
-        if (ImGui::Checkbox("Versions##osd_elem", &g_config.osd_show_dlss_versions)) config_dirty = true;
-        HelpTip("Show DLSS DLL versions (SR, RR, FG) and Streamline version if loaded.");
+        if (ImGui::Checkbox(TR("Versions##osd_elem", "DLL 版本##osd_elem"), &g_config.osd_show_dlss_versions)) config_dirty = true;
+        HelpTip(TR("Show DLSS DLL versions (SR, RR, FG) and Streamline version if loaded.", "显示已加载的 DLSS (SR, RR, FG) 以及 Streamline DLL 版本。"));
         }
         }
 
         ImGui::Spacing();
-        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "System");
-        if (ImGui::Checkbox("GPU Temp##osd_elem", &g_config.osd_show_gpu_temp)) config_dirty = true;
-        HelpTip("GPU core temperature in Celsius. Color-coded: green < 70C, yellow < 85C, red above. NVIDIA only.");
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%s", TR("System", "硬件监控 (AMD / Intel / NVIDIA)"));
+        if (ImGui::Checkbox(TR("GPU Temp##osd_elem", "显卡温度##osd_elem"), &g_config.osd_show_gpu_temp)) config_dirty = true;
+        HelpTip(TR("GPU core temperature in Celsius. Color-coded: green < 70C, yellow < 85C, red above.", "GPU 核心温度（摄氏度）。绿色 < 70°C，黄色 < 85°C，红色超过 85°C。"));
         FlowSeparator();
-        if (ImGui::Checkbox("GPU Clock##osd_elem", &g_config.osd_show_gpu_clock)) config_dirty = true;
-        HelpTip("GPU core and memory clock speeds in MHz. NVIDIA only.");
+        if (ImGui::Checkbox(TR("GPU Clock##osd_elem", "显卡频率##osd_elem"), &g_config.osd_show_gpu_clock)) config_dirty = true;
+        HelpTip(TR("GPU core and memory clock speeds in MHz.", "GPU 核心与显存实时运行频率 (MHz)。"));
         FlowSeparator();
-        if (ImGui::Checkbox("GPU Usage##osd_elem", &g_config.osd_show_gpu_usage)) config_dirty = true;
-        HelpTip("GPU graphics engine utilization percentage. NVIDIA only.");
+        if (ImGui::Checkbox(TR("GPU Usage##osd_elem", "显卡占用##osd_elem"), &g_config.osd_show_gpu_usage)) config_dirty = true;
+        HelpTip(TR("GPU graphics engine utilization percentage.", "GPU 图形引擎实时使用率百分比。"));
         FlowSeparator();
-        if (ImGui::Checkbox("GPU Power##osd_elem", &g_config.osd_show_gpu_power)) config_dirty = true;
-        HelpTip("GPU board power draw in watts. NVIDIA only.");
+        if (ImGui::Checkbox(TR("GPU Power##osd_elem", "显卡功耗##osd_elem"), &g_config.osd_show_gpu_power)) config_dirty = true;
+        HelpTip(TR("GPU board power draw in watts.", "GPU 整卡实时功耗 (W)。"));
         FlowSeparator();
-        if (ImGui::Checkbox("VRAM##osd_elem", &g_config.osd_show_vram)) config_dirty = true;
-        HelpTip("Video memory usage (used / total). NVIDIA only.");
+        if (ImGui::Checkbox(TR("VRAM##osd_elem", "显存占用##osd_elem"), &g_config.osd_show_vram)) config_dirty = true;
+        HelpTip(TR("Video memory usage (used / total).", "显存 (VRAM) 占用量与显存总量 (MB)。支持 AMD / Intel / NVIDIA。"));
         FlowSeparator();
-        if (ImGui::Checkbox("CPU Usage##osd_elem", &g_config.osd_show_cpu_usage)) config_dirty = true;
-        HelpTip("System-wide CPU utilization percentage.");
+        if (ImGui::Checkbox(TR("CPU Usage##osd_elem", "CPU 占用##osd_elem"), &g_config.osd_show_cpu_usage)) config_dirty = true;
+        HelpTip(TR("System-wide CPU utilization percentage.", "系统级整体 CPU 负载使用率百分比。"));
         FlowSeparator();
-        if (ImGui::Checkbox("RAM##osd_elem", &g_config.osd_show_ram)) config_dirty = true;
-        HelpTip("System RAM usage (used / total) in GB.");
+        if (ImGui::Checkbox(TR("RAM##osd_elem", "系统内存##osd_elem"), &g_config.osd_show_ram)) config_dirty = true;
+        HelpTip(TR("System RAM usage (used / total) in GB.", "系统物理内存 (RAM) 占用量与总量 (GB)。"));
     }
 
     // ════════════════════════════════════════════
@@ -935,7 +970,7 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
     // Sticky monitor enforcement — runs every frame, moves window back if it drifted
     EnforceStickyMonitor();
 
-    if (ImGui::CollapsingHeader("Screen")) {
+    if (ImGui::CollapsingHeader(TR("Screen", "显示与窗口"))) {
 #ifndef _WIN64
         ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
             "Note: Screen options are experimental on 32-bit and may cause");
@@ -943,12 +978,12 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
             "adverse effects (minimize loops, DWM throttling) in some games.");
         ImGui::Spacing();
 #endif
-        if (ImGui::Button("Refresh##monitors")) RefreshMonitorList();
+        if (ImGui::Button(TR("Refresh##monitors", "刷新显示器列表##monitors"))) RefreshMonitorList();
         ImGui::SameLine();
 
-        if (ImGui::BeginCombo("Display", s_selected_monitor == 0 ? "Default"
+        if (ImGui::BeginCombo(TR("Display", "目标显示器"), s_selected_monitor == 0 ? TR("Default", "默认")
                 : s_monitors[s_selected_monitor - 1].label)) {
-            if (ImGui::Selectable("Default", s_selected_monitor == 0)) {
+            if (ImGui::Selectable(TR("Default", "默认"), s_selected_monitor == 0)) {
                 s_selected_monitor = 0;
                 g_config.selected_monitor = 0;
                 config_dirty = true;
@@ -964,17 +999,19 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
             }
             ImGui::EndCombo();
         }
-        HelpTip("Move the game window to a different monitor. Selection is saved and re-applied after alt-tab.");
+        HelpTip(TR("Move the game window to a different monitor. Selection is saved and re-applied after alt-tab.", "将游戏窗口移动到指定显示器。该设置会自动保存，并在 Alt-Tab 切回时自动保持。"));
 
         ImGui::Spacing();
 
         // Window mode combo: Default / Borderless / Fullscreen
-        const char* mode_labels[] = {"Default", "Borderless", "Fullscreen"};
+        const char* mode_labels_en[] = {"Default", "Borderless", "Fullscreen"};
+        const char* mode_labels_zh[] = {"默认 (Default)", "无边框窗口 (Borderless)", "置顶全屏 (Fullscreen)"};
+        const char** mode_labels = IsChinese() ? mode_labels_zh : mode_labels_en;
         int current_mode = 0;
         if (g_config.window_mode == "borderless") current_mode = 1;
         else if (g_config.window_mode == "fullscreen") current_mode = 2;
 
-        if (ImGui::BeginCombo("Window Mode", mode_labels[current_mode])) {
+        if (ImGui::BeginCombo(TR("Window Mode", "窗口模式"), mode_labels[current_mode])) {
             for (int i = 0; i < 3; i++) {
                 bool selected = (current_mode == i);
                 if (ImGui::Selectable(mode_labels[i], selected)) {
@@ -1029,17 +1066,17 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
             }
             ImGui::EndCombo();
         }
-        HelpTip("Default restores the game's normal window. Borderless removes borders and fills the screen. Fullscreen does the same but keeps the window topmost.");
+        HelpTip(TR("Default restores the game's normal window. Borderless removes borders and fills the screen. Fullscreen does the same but keeps the window topmost.",
+                   "默认：恢复游戏原本窗口样式；无边框：消除边框并全屏铺满；置顶全屏：消除边框并将窗口始终置顶。"));
 
         ImGui::Spacing();
-        if (ImGui::Checkbox("Fake Fullscreen", &g_config.fake_fullscreen)) config_dirty = true;
-        HelpTip("Intercept exclusive fullscreen and run as borderless window instead. "
-                "The game still thinks it's in exclusive fullscreen. "
-                "Takes effect on next fullscreen transition or game restart.");
+        if (ImGui::Checkbox(TR("Fake Fullscreen", "伪装独占全屏 (Fake Fullscreen)"), &g_config.fake_fullscreen)) config_dirty = true;
+        HelpTip(TR("Intercept exclusive fullscreen and run as borderless window instead. The game still thinks it's in exclusive fullscreen. Takes effect on next fullscreen transition or game restart.",
+                   "拦截独占全屏请求并以无边框窗口运行，但欺骗游戏使其认为仍处于独占全屏模式。下一次全屏切换或重启游戏生效。"));
 
         // ── Focus Lock ──
         ImGui::Spacing();
-        if (ImGui::Checkbox("Keep Game Focused", &g_config.focus_lock)) {
+        if (ImGui::Checkbox(TR("Keep Game Focused", "防切后台锁定 (Focus Lock)"), &g_config.focus_lock)) {
             config_dirty = true;
             if (g_config.focus_lock) {
                 HWND hwnd = SwapMgr_GetHWND();
@@ -1050,36 +1087,33 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         }
         if (FocusLock_IsActive()) {
             ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "(Active)");
+            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "%s", TR("(Active)", "(生效中)"));
         }
-        HelpTip("Prevent the game from detecting focus loss when you alt-tab. "
-                "Audio and game logic continue running in the background. "
-                "The background FPS cap still applies independently. "
-                "May not work with all games (UWP/Game Pass titles use system-level notifications).");
+        HelpTip(TR("Prevent the game from detecting focus loss when you alt-tab. Audio and game logic continue running in the background. The background FPS cap still applies independently. May not work with all games (UWP/Game Pass titles use system-level notifications).",
+                   "阻止游戏在 Alt-Tab 切到其他窗口时检测到焦点丢失。游戏音频和逻辑在后台持续运行。后台限帧设置依然独立生效。"));
 
         // ── Monitor Blackout ──
         ImGui::Spacing();
         {
             bool blackout_on = Blackout_IsActive();
-            if (ImGui::Checkbox("Blackout Other Monitors", &blackout_on)) {
+            if (ImGui::Checkbox(TR("Blackout Other Monitors", "遮罩副屏 (纯黑防打扰)"), &blackout_on)) {
                 Blackout_SetActive(blackout_on);
             }
             if (Blackout_IsActive()) {
                 ImGui::SameLine();
-                ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "(Active)");
+                ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "%s", TR("(Active)", "(生效中)"));
             }
-            HelpTip("Cover all non-game monitors with a black screen. "
-                    "Useful for reducing distractions and light bleed in dark rooms. "
-                    "Toggle with the keybind below or this checkbox.");
+            HelpTip(TR("Cover all non-game monitors with a black screen. Useful for reducing distractions and light bleed in dark rooms. Toggle with the keybind below or this checkbox.",
+                       "使用全黑遮罩覆盖非游戏副屏，减少暗室中的多屏光污染和干扰。可使用下方热键或复选框切换。"));
 
             // Blackout keybind
             static bool s_blackout_capturing = false;
-            ImGui::Text("Blackout Key:");
+            ImGui::Text("%s", TR("Blackout Key:", "副屏遮罩热键:"));
             ImGui::SameLine();
             if (s_blackout_capturing) {
-                ImGui::TextColored(ImVec4(1,1,0.3f,1), "Press key...");
+                ImGui::TextColored(ImVec4(1,1,0.3f,1), "%s", TR("Press key...", "请按键..."));
                 ImGui::SameLine();
-                if (ImGui::Button("Cancel##blackout")) s_blackout_capturing = false;
+                if (ImGui::Button(TR("Cancel##blackout", "取消##blackout"))) s_blackout_capturing = false;
                 for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; k++) {
                     ImGuiKey key = static_cast<ImGuiKey>(k);
                     if (key == ImGuiKey_LeftCtrl || key == ImGuiKey_RightCtrl) continue;
@@ -1103,12 +1137,12 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
                     }
                 }
             } else {
-                ImGui::Text("%s", g_config.blackout_key.empty() ? "None" : g_config.blackout_key.c_str());
+                ImGui::Text("%s", g_config.blackout_key.empty() ? TR("None", "无") : g_config.blackout_key.c_str());
                 ImGui::SameLine();
-                if (ImGui::Button("Bind##blackout")) s_blackout_capturing = true;
+                if (ImGui::Button(TR("Bind##blackout", "绑定##blackout"))) s_blackout_capturing = true;
                 if (!g_config.blackout_key.empty()) {
                     ImGui::SameLine();
-                    if (ImGui::Button("Clear##blackout")) {
+                    if (ImGui::Button(TR("Clear##blackout", "清除##blackout"))) {
                         g_config.blackout_key.clear();
                         config_dirty = true;
                     }
@@ -1121,18 +1155,18 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         ImGui::Separator();
         ImGui::Spacing();
         {
-            ImGui::Text("OLED Care");
-            HelpTip("Blacks out monitors and reduces FPS to background cap for screen protection while AFK. "
-                     "Toggle with the keybind below.");
+            ImGui::Text("%s", TR("OLED Care", "OLED 防烧屏保护"));
+            HelpTip(TR("Blacks out monitors and reduces FPS to background cap for screen protection while AFK. Toggle with the keybind below.",
+                       "挂机暂离时将屏幕全黑化并降至后台帧率限制，防止 OLED 面板长时间静态烧屏。使用下方热键或挂机计时器激活。"));
 
             // OLED Care keybind + All Monitors on same line
             static bool s_oled_care_capturing = false;
-            ImGui::Text("OLED Care Key:");
+            ImGui::Text("%s", TR("OLED Care Key:", "防烧屏热键:"));
             ImGui::SameLine();
             if (s_oled_care_capturing) {
-                ImGui::TextColored(ImVec4(1,1,0.3f,1), "Press key...");
+                ImGui::TextColored(ImVec4(1,1,0.3f,1), "%s", TR("Press key...", "请按键..."));
                 ImGui::SameLine();
-                if (ImGui::Button("Cancel##oled_care")) s_oled_care_capturing = false;
+                if (ImGui::Button(TR("Cancel##oled_care", "取消##oled_care"))) s_oled_care_capturing = false;
                 for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; k++) {
                     ImGuiKey key = static_cast<ImGuiKey>(k);
                     if (key == ImGuiKey_LeftCtrl || key == ImGuiKey_RightCtrl) continue;
@@ -1156,12 +1190,12 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
                     }
                 }
             } else {
-                ImGui::Text("%s", g_config.oled_care_key.empty() ? "None" : g_config.oled_care_key.c_str());
+                ImGui::Text("%s", g_config.oled_care_key.empty() ? TR("None", "无") : g_config.oled_care_key.c_str());
                 ImGui::SameLine();
-                if (ImGui::Button("Bind##oled_care")) s_oled_care_capturing = true;
+                if (ImGui::Button(TR("Bind##oled_care", "绑定##oled_care"))) s_oled_care_capturing = true;
                 if (!g_config.oled_care_key.empty()) {
                     ImGui::SameLine();
-                    if (ImGui::Button("Clear##oled_care")) {
+                    if (ImGui::Button(TR("Clear##oled_care", "清除##oled_care"))) {
                         g_config.oled_care_key.clear();
                         config_dirty = true;
                     }
@@ -1169,9 +1203,9 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
                 ImGui::SameLine();
                 ImGui::TextDisabled("|");
                 ImGui::SameLine();
-                if (ImGui::Checkbox("All Monitors##oled_care", &g_config.oled_care_all_monitors))
+                if (ImGui::Checkbox(TR("All Monitors##oled_care", "遮罩所有屏幕##oled_care"), &g_config.oled_care_all_monitors))
                     config_dirty = true;
-                HelpTip("When ticked, all monitors are blacked out. When unticked, only the game's display is blacked out.");
+                HelpTip(TR("When ticked, all monitors are blacked out. When unticked, only the game's display is blacked out.", "勾选时遮罩所有显示器；未勾选时仅黑化游戏所在的主显示器。"));
             }
 
             // ── Idle timer ──
@@ -1181,10 +1215,10 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
                 if (!s_idle_active)
                     s_idle_edit = g_config.oled_care_idle_minutes;
 
-                ImGui::Text("Auto after idle:");
+                ImGui::Text("%s", TR("Auto after idle:", "空闲自动激活:"));
                 ImGui::SameLine();
                 ImGui::SetNextItemWidth(45.0f);
-                if (ImGui::InputInt("min##oled_care_idle_input", &s_idle_edit, 0, 0)) {
+                if (ImGui::InputInt(TR("min##oled_care_idle_input", "分钟##oled_care_idle_input"), &s_idle_edit, 0, 0)) {
                     if (s_idle_edit < 0) s_idle_edit = 0;
                     if (s_idle_edit > 999) s_idle_edit = 999;
                     g_config.oled_care_idle_minutes = s_idle_edit;
@@ -1195,7 +1229,8 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
                     g_config.oled_care_idle_minutes = s_idle_edit;
                     config_dirty = true;
                 }
-                HelpTip("Automatically activate OLED Care after this many minutes without any mouse, keyboard, or controller input. 0 = disabled. Any input (moving the mouse, pressing a key, clicking, or using a controller) will turn it back off.");
+                HelpTip(TR("Automatically activate OLED Care after this many minutes without any mouse, keyboard, or controller input. 0 = disabled. Any input (moving the mouse, pressing a key, clicking, or using a controller) will turn it back off.",
+                           "无鼠标、键盘或手柄输入达到该分钟数后自动激活 OLED Care 防烧屏。0 = 禁用。任何输入操作均可立即恢复。"));
             }
         }
     }
@@ -1206,9 +1241,9 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
     ActiveAPI active_api = SwapMgr_GetActiveAPI();
     if ((active_api == ActiveAPI::DX12 || active_api == ActiveAPI::DX11 || active_api == ActiveAPI::Vulkan) && !dmfg_dynamic_active) {
     ImGui::Separator();
-    if (ImGui::CollapsingHeader("Adaptive Smoothing")) {
+    if (ImGui::CollapsingHeader(TR("Adaptive Smoothing", "自适应平滑 (Adaptive Smoothing)"))) {
         bool adaptive = g_config.adaptive_smoothing;
-        if (ImGui::Checkbox("Enable##adaptive", &adaptive)) {
+        if (ImGui::Checkbox(TR("Enable##adaptive", "启用自适应平滑##adaptive"), &adaptive)) {
             g_config.adaptive_smoothing = adaptive;
             g_adaptive_smoothing.SetConfig(
                 g_config.smoothing_window == "dual",
@@ -1221,18 +1256,17 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
             ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "(+%.1f us)",
                                g_smoothing_offset_us.load(std::memory_order_relaxed));
         }
-        HelpTip("P99-based adaptive interval extension. Extends the target interval "
-                "so 99%% of frames complete within it, reducing micro-stutters from "
-                "render time variance. Supports AMD, Intel, and NVIDIA.");
+        HelpTip(TR("P99-based adaptive interval extension. Extends the target interval so 99% of frames complete within it, reducing micro-stutters from render time variance. Supports AMD, Intel, and NVIDIA.",
+                   "基于 P99 渲染耗时的自适应间隔动态补偿。动态扩展目标帧间隔，确保 99% 的帧在预算内完成，有效消除显卡渲染耗时波动引起的微卡顿。支持 AMD、Intel 与 NVIDIA 显卡。"));
 
         if (g_config.adaptive_smoothing) {
-            if (ImGui::Checkbox("Show on OSD##adaptive", &g_config.osd_show_adaptive_smoothing))
+            if (ImGui::Checkbox(TR("Show on OSD##adaptive", "在 OSD 上显示##adaptive"), &g_config.osd_show_adaptive_smoothing))
                 config_dirty = true;
-            HelpTip("Show adaptive smoothing offset and P99 render time on the in-game overlay.");
+            HelpTip(TR("Show adaptive smoothing offset and P99 render time on the in-game overlay.", "在游戏内 OSD 监控面板上显示自适应平滑偏置及 P99 渲染耗时。"));
 
             // Percentile slider
             float pct = static_cast<float>(g_config.smoothing_percentile * 100.0);
-            if (ImGui::SliderFloat("Percentile##adaptive", &pct, 50.0f, 99.9f, "P%.1f")) {
+            if (ImGui::SliderFloat(TR("Percentile##adaptive", "目标分位数 (Percentile)##adaptive"), &pct, 50.0f, 99.9f, "P%.1f")) {
                 g_config.smoothing_percentile = static_cast<double>(pct) / 100.0;
             }
             if (ImGui::IsItemDeactivatedAfterEdit()) {
@@ -1242,12 +1276,15 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
                     g_config.adaptive_smoothing);
                 config_dirty = true;
             }
-            HelpTip("Target percentile for the threshold. P99 = 99%% of frames fit within the interval. Lower = more headroom, higher = tighter.");
+            HelpTip(TR("Target percentile for the threshold. P99 = 99% of frames fit within the interval. Lower = more headroom, higher = tighter.",
+                       "平滑的目标耗时分位数。P99 代表保证 99% 的帧落在该区间内。较低值容差更大，较高值抗偶发卡顿更严苛。"));
 
             // Window mode combo
-            const char* win_labels[] = {"Medium (256)", "Dual (64+512)"};
+            const char* win_labels_en[] = {"Medium (256)", "Dual (64+512)"};
+            const char* win_labels_zh[] = {"中窗口 Medium (256帧)", "双窗口 Dual (64+512帧)"};
+            const char** win_labels = IsChinese() ? win_labels_zh : win_labels_en;
             int current_win = (g_config.smoothing_window == "dual") ? 1 : 0;
-            if (ImGui::BeginCombo("Window##adaptive", win_labels[current_win])) {
+            if (ImGui::BeginCombo(TR("Window##adaptive", "采样窗口模式 (Window)##adaptive"), win_labels[current_win])) {
                 for (int i = 0; i < 2; i++) {
                     bool selected = (current_win == i);
                     if (ImGui::Selectable(win_labels[i], selected)) {
@@ -1261,19 +1298,19 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
                 }
                 ImGui::EndCombo();
             }
-            HelpTip("Medium: single 256-frame window (~4s). Dual: short 64 + long 512 window, uses max of both P99s for robustness against scene changes.");
+            HelpTip(TR("Medium: single 256-frame window (~4s). Dual: short 64 + long 512 window, uses max of both P99s for robustness against scene changes.",
+                       "Medium: 单一 256 帧滑动窗口 (约 4 秒)；Dual: 结合短窗口 (64帧) 与长窗口 (512帧) 取最大值，对场景剧烈切换更鲁棒抗卡。"));
 
             // Bias slider
             float bias = static_cast<float>(g_config.smoothing_bias_us);
-            if (ImGui::SliderFloat("Bias##adaptive", &bias, 0.0f, 1000.0f, "%.0f us")) {
+            if (ImGui::SliderFloat(TR("Bias##adaptive", "额外安全偏置 (Bias)##adaptive"), &bias, 0.0f, 1000.0f, "%.0f us")) {
                 g_config.smoothing_bias_us = static_cast<double>(bias);
             }
             if (ImGui::IsItemDeactivatedAfterEdit()) {
                 config_dirty = true;
             }
-            HelpTip("Constant offset added on top of the computed P99 smoothing. "
-                     "Use this to add extra headroom if the automatic offset isn't enough. "
-                     "0 = no extra bias, 1000 = +1ms added to every frame interval.");
+            HelpTip(TR("Constant offset added on top of the computed P99 smoothing. Use this to add extra headroom if the automatic offset isn't enough. 0 = no extra bias, 1000 = +1ms added to every frame interval.",
+                       "在计算出的平滑耗时基础上额外增加的固定安全余量。若自动计算仍偶有微卡顿可适当调大。0 = 不加额外偏置，1000 = 额外增加 1 毫秒余量。"));
         }
     }
     } // DX12 only (Adaptive Smoothing)
@@ -1284,51 +1321,48 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
     // SECTION 4: Advanced (collapsible)
     // ════════════════════════════════════════════
     ImGui::Separator();
-    if (ImGui::CollapsingHeader("Advanced")) {
+    if (ImGui::CollapsingHeader(TR("Advanced", "高级选项"))) {
 #ifdef _WIN64
         // Reflex Injection toggle
         bool inject = g_config.reflex_inject;
-        if (ImGui::Checkbox("Inject Reflex Markers", &inject)) {
+        if (ImGui::Checkbox(TR("Inject Reflex Markers", "模拟注入 Reflex 标记"), &inject)) {
             g_config.reflex_inject = inject;
             config_dirty = true;
         }
-        HelpTip("Synthesize NVIDIA Reflex markers for non-Reflex games. "
-                "Enables driver-side JIT pacing and GPU clock boost. "
-                "Auto-disables if the game has native Reflex support.");
+        HelpTip(TR("Synthesize NVIDIA Reflex markers for non-Reflex games. Enables driver-side JIT pacing and GPU clock boost. Auto-disables if the game has native Reflex support.",
+                   "为原生未集成 Reflex 的游戏模拟注入标记，激活驱动层实时帧同步与 GPU 频率增强。若游戏原生支持则自动禁用。"));
 
         // Status indicator
         if (ReflexInject_IsActive()) {
             ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "(Active)");
+            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "%s", TR("(Active)", "(生效中)"));
         } else if (g_config.reflex_inject) {
             ImGui::SameLine();
-            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "(Waiting for device)");
+            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "%s", TR("(Waiting for device)", "(等待设备)"));
         }
 
         // Flip Model Override toggle (DX11 only)
         ImGui::Spacing();
         static bool s_flip_model_at_launch = g_config.flip_model_override;
         bool flip_override = g_config.flip_model_override;
-        if (ImGui::Checkbox("Flip Model Override", &flip_override)) {
+        if (ImGui::Checkbox(TR("Flip Model Override", "DX11 翻转模型覆盖 (Flip Model)"), &flip_override)) {
             g_config.flip_model_override = flip_override;
             config_dirty = true;
         }
-        HelpTip("Force DX11 games from bitblt to flip model presentation. "
-                "Enables true VRR/G-Sync operation and eliminates DWM composition stutter. "
-                "May break some games that use GDI interop or MSAA. "
-                "Requires game restart to take effect.");
+        HelpTip(TR("Force DX11 games from bitblt to flip model presentation. Enables true VRR/G-Sync operation and eliminates DWM composition stutter. May break some games that use GDI interop or MSAA. Requires game restart to take effect.",
+                   "强制将 DX11 传统位块传输升级为现代翻转模型呈现。彻底消除桌面窗口管理器 (DWM) 合成卡顿并解锁完整可变刷新率。需重启游戏生效。"));
         if (FlipModel_WasApplied()) {
             ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "(Active)");
+            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "%s", TR("(Active)", "(生效中)"));
         } else if (FlipModel_IsNativeFlip()) {
             ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "(Native)");
+            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "%s", TR("(Native)", "(原生翻转)"));
         } else if (g_config.flip_model_override && SwapMgr_GetActiveAPI() == ActiveAPI::DX11) {
             ImGui::SameLine();
             if (s_flip_model_at_launch && SwapMgr_IsValid())
-                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "(Not supported)");
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", TR("(Not supported)", "(不受支持)"));
             else
-                ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "(Restart required)");
+                ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "%s", TR("(Restart required)", "(需重启游戏)"));
         }
 
         // Telemetry Logging toggle
@@ -1336,64 +1370,59 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
 #endif // _WIN64
 
         bool csv = g_config.csv_enabled;
-        if (ImGui::Checkbox("Telemetry Logging", &csv)) {
+        if (ImGui::Checkbox(TR("Telemetry Logging", "启用 CSV 遥测日志"), &csv)) {
             g_config.csv_enabled = csv;
             CSV_SetEnabled(csv);
             config_dirty = true;
         }
-        HelpTip("Enable per-frame CSV telemetry recording. Toggle in-game with the CSV hotkey (default F11).");
+        HelpTip(TR("Enable per-frame CSV telemetry recording. Toggle in-game with the CSV hotkey (default F11).", "开启逐帧 CSV 遥测数据记录。游戏内可按热键（默认 F11）快捷启闭。"));
 
         // Advanced Logging toggle (log_level: warn <-> info)
         bool info_logging = (g_config.log_level == "info");
-        if (ImGui::Checkbox("Advanced Logging", &info_logging)) {
+        if (ImGui::Checkbox(TR("Advanced Logging", "详细诊断日志 (Debug Info)"), &info_logging)) {
             g_config.log_level = info_logging ? "info" : "warn";
             Log_SetLevel(Log_ParseLevel(g_config.log_level.c_str()));
             config_dirty = true;
         }
-        HelpTip("When enabled, the log file records detailed info-level messages. "
-                "When disabled, only warnings and errors are logged. "
-                "Enable this before reporting issues.");
+        HelpTip(TR("When enabled, the log file records detailed info-level messages. When disabled, only warnings and errors are logged. Enable this before reporting issues.",
+                   "启用后日志记录详细排查信息；禁用时仅记录警告与错误。反馈排查问题时建议开启。"));
 
 #ifdef _WIN64
         // DLSS Info Hooks toggle
         ImGui::Spacing();
         static bool s_dlss_hooks_at_launch = g_config.dlss_info_hooks;
         bool dlss_hooks = g_config.dlss_info_hooks;
-        if (ImGui::Checkbox("DLSS Info Hooks", &dlss_hooks)) {
+        if (ImGui::Checkbox(TR("DLSS Info Hooks", "DLSS 状态拦截挂钩"), &dlss_hooks)) {
             g_config.dlss_info_hooks = dlss_hooks;
             config_dirty = true;
         }
         ImGui::SameLine();
         if (dlss_hooks != s_dlss_hooks_at_launch)
-            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "(Restart required)");
+            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "%s", TR("(Restart required)", "(需重启游戏)"));
         else if (dlss_hooks)
-            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "(Enabled)");
+            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "%s", TR("(Enabled)", "(已启用)"));
         else
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "(Disabled)");
-        HelpTip("Hooks into the DLSS pipeline to read quality mode, render resolution, "
-                "and feature info for the OSD. Disable if experiencing crashes with DLSS games. "
-                "FPS cap, FG detection, and pacing are unaffected.");
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", TR("(Disabled)", "(已禁用)"));
+        HelpTip(TR("Hooks into the DLSS pipeline to read quality mode, render resolution, and feature info for the OSD. Disable if experiencing crashes with DLSS games. FPS cap, FG detection, and pacing are unaffected.",
+                   "挂钩到 DLSS 管线以在 OSD 上显示画质、分辨率等状态。如个别游戏崩溃可关闭，不影响限帧器核心功能。"));
 
         // Proactive Streamline Hooks toggle
         ImGui::Spacing();
         static bool s_proactive_at_launch = !g_config.streamline_compat;
         bool proactive = !g_config.streamline_compat;
-        if (ImGui::Checkbox("Proactive Streamline Hooks", &proactive)) {
+        if (ImGui::Checkbox(TR("Proactive Streamline Hooks", "Streamline 主动挂钩兼容"), &proactive)) {
             g_config.streamline_compat = !proactive;
             config_dirty = true;
         }
         ImGui::SameLine();
         if (proactive != s_proactive_at_launch)
-            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "(Restart required)");
+            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "%s", TR("(Restart required)", "(需重启游戏)"));
         else if (proactive)
-            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "(Enabled)");
+            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "%s", TR("(Enabled)", "(已启用)"));
         else
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "(Disabled)");
-        HelpTip("Enable per-game if Frame Generation detection is incorrect "
-                "(showing on when off, or not detecting when on). "
-                "Most games don't need this — only enable if FG pacing info is missing or wrong. "
-                "May break FG in some games if enabled unnecessarily. "
-                "Requires a game restart to take effect.");
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", TR("(Disabled)", "(已禁用)"));
+        HelpTip(TR("Enable per-game if Frame Generation detection is incorrect (showing on when off, or not detecting when on). Most games don't need this — only enable if FG pacing info is missing or wrong. May break FG in some games if enabled unnecessarily. Requires a game restart to take effect.",
+                   "若插帧状态识别有误时针对特定游戏开启。绝大部分游戏无需开启。修改后需重启游戏生效。"));
 #endif // _WIN64
 
     }
@@ -1405,13 +1434,13 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
     {
         static bool s_capturing = false;
 
-        ImGui::Text("OSD Toggle Key:");
+        ImGui::Text("%s", TR("OSD Toggle Key:", "OSD 开关快捷键:"));
         ImGui::SameLine();
 
         if (s_capturing) {
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.3f, 1.0f), "Press key combo...");
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.3f, 1.0f), "%s", TR("Press key combo...", "请按下组合键..."));
             ImGui::SameLine();
-            if (ImGui::Button("Cancel")) {
+            if (ImGui::Button(TR("Cancel", "取消"))) {
                 s_capturing = false;
             }
 
@@ -1454,11 +1483,12 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         } else {
             ImGui::Text("%s", g_config.osd_toggle_key.c_str());
             ImGui::SameLine();
-            if (ImGui::Button("Bind")) {
+            if (ImGui::Button(TR("Bind", "绑定快捷键"))) {
                 s_capturing = true;
             }
         }
-        HelpTip("Keybind to toggle the OSD overlay on/off. Click Bind, then press a key combo (e.g. Ctrl+F12, Alt+P). Works in-game and with the ReShade UI open.");
+        HelpTip(TR("Keybind to toggle the OSD overlay on/off. Click Bind, then press a key combo (e.g. Ctrl+F12, Alt+P). Works in-game and with the ReShade UI open.",
+                   "快捷启闭 OSD 面板的热键。点击绑定后直接在键盘上按下组合键（如 Ctrl+F12）。"));
     }
 
     // ════════════════════════════════════════════
