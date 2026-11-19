@@ -1716,8 +1716,11 @@ static void DrawBadge(const char* tag, ImU32 accent_col, float scale, float min_
     float pad_x = 5.0f * scale;
     float pad_y = 1.5f * scale;
     float pill_w = txt_sz.x + pad_x * 2.0f;
-    if (min_width > 0.0f && pill_w < min_width * scale) {
-        pill_w = min_width * scale;
+    if (min_width > 0.0f) {
+        float target_w = min_width * scale;
+        if (target_w > pill_w) {
+            pill_w = target_w;
+        }
         pad_x = (pill_w - txt_sz.x) * 0.5f;
     }
     ImVec2 p0 = ImGui::GetCursorScreenPos();
@@ -1756,7 +1759,8 @@ static void DrawBarDivider(float scale) {
 static void DrawModernCardOSD(float scale, double ft_ms) {
     const HWMonitorData& hw = HWMonitor_GetData();
     float b = g_config.osd_text_brightness;
-    constexpr float COL_W = 38.0f; // Aligned badge column width for perfect tabular layout
+    float vram_w = ImGui::CalcTextSize("VRAM").x + 12.0f * scale;
+    float COL_W = (std::max)(48.0f, vram_w / scale); // Unified column width so VRAM and all badges align flush
 
     // ── Module 1: FPS & Frametime ──
     if (g_config.osd_show_fps || g_config.osd_show_frametime || g_config.osd_show_1pct_low || g_config.osd_show_0_1pct_low) {
