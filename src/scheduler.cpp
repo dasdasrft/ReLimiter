@@ -912,10 +912,10 @@ static void OnMarker_VRR(uint64_t frameID, int64_t now) {
     }
 
     // Publish deadline for PRESENT_START gate.
-    // Always publish — the gate self-disables for late frames
-    // (timestamp >= gate_target → passthrough). No need to explicitly
-    // disable it during overload.
-    bool gate_active = !s_background_mode && predictor_warm;
+    // Skip gate during overload/background/cold (as declared in scheduler.h).
+    // Holding fast frames during severe GPU overload causes alternating saw-tooth
+    // oscillation with missed frames.
+    bool gate_active = !s_background_mode && predictor_warm && !overload_active;
     if (gate_active) {
         g_next_deadline.store(this_frame_deadline, std::memory_order_relaxed);
     } else {
