@@ -14,6 +14,9 @@
 #include "logger.h"
 #include <atomic>
 
+// Measured frame render time (us) exported for Adaptive Smoothing fallback on AMD/non-Reflex
+std::atomic<double> g_measured_render_time_us{0.0};
+
 // Vulkan doesn't have per-frame IDs from markers by default.
 // We use a monotonic counter as the frameID for the shared scheduler.
 static std::atomic<uint64_t> s_vk_frame_counter{1};
@@ -99,8 +102,10 @@ void VkEnforce_OnPresent(int64_t now_qpc) {
     // PCL hook (SIM_START→PRESENT_START), so skip direct feeding here.
     if (!PCL_MarkersFlowing() && s_post_sleep_qpc > 0) {
         double render_time = qpc_to_us(now_qpc - s_post_sleep_qpc);
-        if (render_time > 0.0 && render_time < 200000.0)
+        if (render_time > 0.0 && render_time < 200000.0) {
             g_predictor.frame_times_us.Push(render_time);
+            g_measured_render_time_us.store(render_time, std::memory_order_relaxed);
+        }
     }
 
     // ── DXGI present-based: feed correlator ──

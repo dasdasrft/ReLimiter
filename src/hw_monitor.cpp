@@ -3,7 +3,9 @@
 #include <Windows.h>
 #include <Psapi.h>
 #include <powrprof.h>
+#include <dxgi1_4.h>
 #pragma comment(lib, "PowrProf.lib")
+#pragma comment(lib, "dxgi.lib")
 #include <cstdint>
 #include <cstring>
 #include <atomic>
@@ -220,9 +222,58 @@ static bool InitNVAPI() {
     return true;
 }
 
-static void PollGPU(HWMonitorData& d) {
-    if (!s_nvapi_available || !s_gpu_handle) return;
+// ── AMD ADL types & state ──
+static bool s_adl_available = false;
+static HMODULE s_adl_module = nullptr;
+static void* s_adl_context = nullptr;
+static int s_adl_adapter_index = -1;
 
+typedef void* (__cdecl *PFN_ADL_Main_Malloc)(int);
+typedef int (*PFN_ADL2_Main_Control_Create)(PFN_ADL_Main_Malloc, int, void**);
+typedef int (*PFN_ADL2_Main_Control_Destroy)(void*);
+typedef int (*PFN_ADL2_Adapter_NumberOfAdapters_Get)(void*, int*);
+typedef int (*PFN_ADL2_OverdriveN_Temperature_Get)(void*, int, int, int*);
+typedef int (*PFN_ADL2_Overdrive6_Temperature_Get)(void*, int, int*);
+
+static PFN_ADL2_Main_Control_Create s_ADL2_Main_Control_Create = nullptr;
+static PFN_ADL2_Main_Control_Destroy s_ADL2_Main_Control_Destroy = nullptr;
+static PFN_ADL2_Adapter_NumberOfAdapters_Get s_ADL2_Adapter_NumberOfAdapters_Get = nullptr;
+static PFN_ADL2_OverdriveN_Temperature_Get s_ADL2_OverdriveN_Temperature_Get = nullptr;
+static PFN_ADL2_Overdrive6_Temperature_Get s_ADL2_Overdrive6_Temperature_Get = nullptr;
+
+static bool InitADL() {
+#ifdef _WIN64
+    s_adl_module = LoadLibraryW(L"atiadlxx.dll");
+#else
+    s_adl_module = LoadLibraryW(L"atiadlxy.dll");
+#endif
+    if (!s_adl_module) return false;
+
+    s_ADL2_Main_Control_Create = reinterpret_cast<PFN_ADL2_Main_Control_Create>(
+        GetProcAddress(s_adl_module, "ADL2_Main_Control_Create"));
+    s_ADL2_Main_Control_Destroy = reinterpret_cast<PFN_ADL2_Main_Control_Destroy>(
+        GetProcAddress(s_adl_module, "ADL2_Main_Control_Destroy"));
+    s_ADL2_Adapter_NumberOfAdapters_Get = reinterpret_cast<PFN_ADL2_Adapter_NumberOfAdapters_Get>(
+        GetProcAddress(s_adl_module, "ADL2_Adapter_NumberOfAdapters_Get"));
+    s_ADL2_OverdriveN_Temperature_Get = reinterpret_cast<PFN_ADL2_OverdriveN_Temperature_Get>(
+        GetProcAddress(s_adl_module, "ADL2_OverdriveN_Temperature_Get"));
+    s_ADL2_Overdrive6_Temperature_Get = reinterpret_cast<PFN_ADL2_Overdrive6_Temperature_Get>(
+        GetProcAddress(s_adl_module, "ADL2_Overdrive6_Temperature_Get"));
+
+    if (s_ADL2_Main_Control_Create && s_ADL2_Main_Control_Create([](int sz) -> void* { return malloc(sz); }, 1, &s_adl_context) == 0 && s_adl_context) {
+        int num = 0;
+        if (s_ADL2_Adapter_NumberOfAdapters_Get && s_ADL2_Adapter_NumberOfAdapters_Get(s_adl_context, &num) == 0 && num > 0) {
+            s_adl_available = true;
+            s_adl_adapter_index = 0;
+            LOG_INFO("HWMonitor: AMD ADL2 initialized, adapter_index=%d (total=%d)", s_adl_adapter_index, num);
+            return true;
+        }
+    }
+    return false;
+}
+
+static void PollGPU(HWMonitorData& d) {
+    if (s_nvapi_available && s_gpu_handle) {
     if (s_GetThermalSettings) {
         HW_NV_GPU_THERMAL_SETTINGS thermal = {};
         thermal.version = HW_MAKE_VER(HW_NV_GPU_THERMAL_SETTINGS, 2);
@@ -324,6 +375,37 @@ static void PollGPU(HWMonitorData& d) {
                 d.gpu_power_w = static_cast<int>(power_mw / 1000);
         }
     }
+    } else if (s_adl_available && s_adl_context) {
+        __try {
+            int temp = 0;
+            if (s_ADL2_OverdriveN_Temperature_Get && s_ADL2_OverdriveN_Temperature_Get(s_adl_context, s_adl_adapter_index, 1, &temp) == 0 && temp > 0) {
+                d.gpu_temp_c = temp / 1000;
+            } else if (s_ADL2_Overdrive6_Temperature_Get && s_ADL2_Overdrive6_Temperature_Get(s_adl_context, s_adl_adapter_index, &temp) == 0 && temp > 0) {
+                d.gpu_temp_c = temp / 1000;
+            }
+        } __except(EXCEPTION_EXECUTE_HANDLER) {}
+    }
+
+    // Fallback: Query VRAM via standard DXGI 1.4 for all vendors (AMD, Intel, NVIDIA)
+    if (d.vram_total_mb <= 0) {
+        IDXGIFactory4* factory = nullptr;
+        if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+            IDXGIAdapter1* adapter = nullptr;
+            if (SUCCEEDED(factory->EnumAdapters1(0, &adapter))) {
+                IDXGIAdapter3* adapter3 = nullptr;
+                if (SUCCEEDED(adapter->QueryInterface(IID_PPV_ARGS(&adapter3)))) {
+                    DXGI_QUERY_VIDEO_MEMORY_INFO memInfo = {};
+                    if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &memInfo))) {
+                        d.vram_total_mb = static_cast<int64_t>(memInfo.Budget / (1024 * 1024));
+                        d.vram_used_mb  = static_cast<int64_t>(memInfo.CurrentUsage / (1024 * 1024));
+                    }
+                    adapter3->Release();
+                }
+                adapter->Release();
+            }
+            factory->Release();
+        }
+    }
 }
 
 static void PollCPU(HWMonitorData& d) {
@@ -420,6 +502,9 @@ static void PollThreadProc() {
 
 void HWMonitor_Init() {
     s_nvapi_available = InitNVAPI();
+    if (!s_nvapi_available) {
+        s_adl_available = InitADL();
+    }
 
     // Do one synchronous poll so data is available immediately
     HWMonitorData initial = {};
@@ -435,7 +520,9 @@ void HWMonitor_Init() {
     s_running.store(true, std::memory_order_relaxed);
     s_poll_thread = std::thread(PollThreadProc);
 
-    LOG_INFO("HWMonitor: initialized (NVAPI=%s), poll thread started", s_nvapi_available ? "yes" : "no");
+    LOG_INFO("HWMonitor: initialized (NVAPI=%s, ADL=%s), poll thread started",
+             s_nvapi_available ? "yes" : "no",
+             s_adl_available ? "yes" : "no");
 }
 
 void HWMonitor_Shutdown() {
@@ -444,6 +531,17 @@ void HWMonitor_Shutdown() {
         s_poll_thread.join();
     s_nvapi_available = false;
     s_gpu_handle = nullptr;
+
+    if (s_adl_available && s_adl_context && s_ADL2_Main_Control_Destroy) {
+        s_ADL2_Main_Control_Destroy(s_adl_context);
+        s_adl_context = nullptr;
+    }
+    if (s_adl_module) {
+        FreeLibrary(s_adl_module);
+        s_adl_module = nullptr;
+    }
+    s_adl_available = false;
+
     LOG_INFO("HWMonitor: shutdown");
 }
 

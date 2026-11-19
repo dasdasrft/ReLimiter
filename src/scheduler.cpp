@@ -28,6 +28,7 @@
 #include "streamline_hooks.h"
 #include "focus_lock.h"
 #include "adaptive_smoothing.h"
+#include "vk_enforce.h"
 #include "blackout.h"
 #include "config.h"
 #include "logger.h"
@@ -553,22 +554,28 @@ static void OnMarker_VRR(uint64_t frameID, int64_t now) {
 
     // ── Adaptive smoothing: P99-based interval extension ──
     // GPU active render time: the driver-measured shader execution time
-    // excluding idle bubbles between draw calls. This is the ground truth
-    // for how long the GPU actually needs to render the frame — independent
-    // of our sleep, the gate hold, CPU overhead, or pipeline latency.
+    // excluding idle bubbles between draw calls. On AMD/non-Reflex hardware,
+    // falls back to measured frame render time or latest predictor sample.
     double smoothing_offset = 0.0;
     if (g_config.adaptive_smoothing &&
         predictor_warm) {
         double gpu_active = g_reflex_gpu_active_us.load(std::memory_order_relaxed);
+        if (gpu_active <= 0.0) {
+            gpu_active = g_measured_render_time_us.load(std::memory_order_relaxed);
+        }
+        if (gpu_active <= 0.0 && g_predictor.frame_times_us.Size() > 0) {
+            gpu_active = g_predictor.frame_times_us.Latest();
+        }
+
         // Keep last known plausible value — Feedback only updates periodically.
-        // Reject values below 50% of effective interval as garbage from early
-        // initialization (DLSS not yet active, ring buffer contains stale data).
+        // For non-Reflex/AMD fallback, allow any reasonable render time (>1ms).
         static double s_last_gpu_active = 0.0;
-        double min_plausible = effective_interval * 0.5;
+        double min_plausible = (std::min)(effective_interval * 0.5, 1000.0);
         if (gpu_active >= min_plausible)
             s_last_gpu_active = gpu_active;
-        else
+        else if (s_last_gpu_active > 0.0)
             gpu_active = s_last_gpu_active;
+
         if (gpu_active >= min_plausible && gpu_active < effective_interval * 3.0)
             smoothing_offset = g_adaptive_smoothing.Update(gpu_active, effective_interval);
         // Add user-configured constant bias on top of the computed offset

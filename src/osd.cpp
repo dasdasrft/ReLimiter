@@ -24,6 +24,7 @@
 #include "presentation_gate.h"
 #include "flip_model.h"
 #include "adaptive_smoothing.h"
+#include "vk_enforce.h"
 #include "hw_monitor.h"
 #include "feedback.h"
 #include "ngx_hooks.h"
@@ -1200,9 +1201,10 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
     }
 
     // ════════════════════════════════════════════
-    // SECTION: Adaptive Smoothing (collapsible, DX12 only)
+    // SECTION: Adaptive Smoothing (collapsible)
     // ════════════════════════════════════════════
-    if (SwapMgr_GetActiveAPI() == ActiveAPI::DX12 && !dmfg_dynamic_active) {
+    ActiveAPI active_api = SwapMgr_GetActiveAPI();
+    if ((active_api == ActiveAPI::DX12 || active_api == ActiveAPI::DX11 || active_api == ActiveAPI::Vulkan) && !dmfg_dynamic_active) {
     ImGui::Separator();
     if (ImGui::CollapsingHeader("Adaptive Smoothing")) {
         bool adaptive = g_config.adaptive_smoothing;
@@ -1221,7 +1223,7 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         }
         HelpTip("P99-based adaptive interval extension. Extends the target interval "
                 "so 99%% of frames complete within it, reducing micro-stutters from "
-                "render time variance. DX12+Reflex path only.");
+                "render time variance. Supports AMD, Intel, and NVIDIA.");
 
         if (g_config.adaptive_smoothing) {
             if (ImGui::Checkbox("Show on OSD##adaptive", &g_config.osd_show_adaptive_smoothing))
@@ -2308,6 +2310,8 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
 
         if (g_config.osd_show_gpu_render_time) {
             double gpu_us = g_reflex_gpu_active_us.load(std::memory_order_relaxed);
+            if (gpu_us <= 0.0)
+                gpu_us = g_measured_render_time_us.load(std::memory_order_relaxed);
             if (gpu_us > 0.0) {
                 char buf[32];
                 snprintf(buf, sizeof(buf), "GPU: %.1f ms", gpu_us / 1000.0);

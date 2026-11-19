@@ -33,7 +33,17 @@ if(MSVC)
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
+## ── AMD Adaptive Smoothing unit tests ──
+add_executable(test_amd_adaptive_smoothing test_amd_adaptive_smoothing.cpp)
+target_compile_features(test_amd_adaptive_smoothing PRIVATE cxx_std_17)
+
+if(MSVC)
+    set_property(TARGET test_amd_adaptive_smoothing PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 enable_testing()
 add_test(NAME dmfg_detection_properties COMMAND test_dmfg_detection)
 add_test(NAME scheduler_passthrough COMMAND test_scheduler_passthrough)
 add_test(NAME dmfg_output_cap_properties COMMAND test_dmfg_output_cap)
+add_test(NAME amd_adaptive_smoothing COMMAND test_amd_adaptive_smoothing)
