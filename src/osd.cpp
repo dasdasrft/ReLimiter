@@ -399,6 +399,9 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
             p.show_vram = true;
             p.show_cpu_usage = true;
             p.show_ram = true;
+            p.show_api = true;
+            p.show_resolution = true;
+            p.show_flip_model = true;
             OSDPreset_ApplyTogglesOnly(p);
             config_dirty = true;
         }
@@ -835,6 +838,17 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         FlowSeparator();
         if (ImGui::Checkbox(TR("RAM##osd_elem", "系统内存##osd_elem"), &g_config.osd_show_ram)) config_dirty = true;
         HelpTip(TR("System RAM usage (used / total) in GB.", "系统物理内存 (RAM) 占用量与总量 (GB)。"));
+
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.8f, 0.6f, 1.0f, 1.0f), "%s", TR("Display & API", "显示与图形接口"));
+        if (ImGui::Checkbox(TR("API##osd_elem", "图形接口 (API)##osd_elem"), &g_config.osd_show_api)) config_dirty = true;
+        HelpTip(TR("Show graphics API and binary architecture (e.g. DX12 64-bit, Vulkan).", "显示当前游戏运行的图形接口及架构位数（如 DX12 64位、Vulkan 等）。"));
+        FlowSeparator();
+        if (ImGui::Checkbox(TR("Resolution##osd_elem", "渲染分辨率##osd_elem"), &g_config.osd_show_resolution)) config_dirty = true;
+        HelpTip(TR("Show current swapchain / backbuffer rendering resolution.", "显示当前游戏交换链/后台缓冲区的渲染分辨率。"));
+        FlowSeparator();
+        if (ImGui::Checkbox(TR("Flip Model##osd_elem", "翻转呈现模式##osd_elem"), &g_config.osd_show_flip_model)) config_dirty = true;
+        HelpTip(TR("Show presentation model (FLIP_DISCARD, BitBlt, Mailbox, FIFO, etc.) and VRR tearing status.", "显示当前呈现翻转模式（如 FLIP_DISCARD、位块传输 BitBlt、Mailbox、FIFO 等）以及 VRR 撕裂支持状态。"));
     }
 
     // ════════════════════════════════════════════
@@ -1721,6 +1735,7 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
                 p.show_adaptive_smoothing = true; p.show_gpu_temp = true;
                 p.show_gpu_clock = true; p.show_gpu_usage = true; p.show_gpu_power = true; p.show_vram = true;
                 p.show_cpu_usage = true; p.show_ram = true;
+                p.show_api = true; p.show_resolution = true; p.show_flip_model = true;
                 p.show_dlss_quality = true; p.show_dlss_features = true;
                 p.show_dlss_resolution = true; p.show_dlss_presets = true;
                 p.show_dlss_versions = true;
@@ -1864,14 +1879,6 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
             s_display_output_fps = g_output_fps.load(std::memory_order_relaxed);
         }
     }
-
-    int tier = static_cast<int>(g_current_tier);
-
-    // Limiter-added latency: only the gate hold adds to input-to-photon latency.
-    // own_sleep happens at SIMULATION_START (before input sampling with Reflex),
-    // so it's frame pacing, not added latency. gate_sleep holds the present
-    // after rendering, which genuinely delays display.
-    double limiter_added_ms = g_last_gate_sleep_us.load(std::memory_order_relaxed) / 1000.0;
 
     // Compute pixel position from screen percentage
     ImVec2 display = ImGui::GetIO().DisplaySize;
@@ -2052,6 +2059,8 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
         // PIPELINE (light blue)
         // ═══════════════════════════════════
 #ifdef _WIN64
+        int tier = static_cast<int>(g_current_tier);
+        double limiter_added_ms = g_last_gate_sleep_us.load(std::memory_order_relaxed) / 1000.0;
         int fg_div_raw = ComputeFGDivisorRaw();
         if (g_config.osd_show_fg && fg_div_raw > 1) {
             char buf[48];
@@ -2110,6 +2119,43 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
             OSDTextColored(ColLatency(), buf);
         }
 #endif // _WIN64 (Pipeline section: FG, Limiter, Adaptive Smoothing)
+
+        // ═══════════════════════════════════
+        // DISPLAY & API (light blue)
+        // ═══════════════════════════════════
+        if (g_config.osd_show_api) {
+            ActiveAPI api = SwapMgr_GetActiveAPI();
+            const char* api_name = "None";
+            if (api == ActiveAPI::DX12) api_name = "DX12";
+            else if (api == ActiveAPI::DX11) api_name = "DX11";
+            else if (api == ActiveAPI::DX9) api_name = "DX9";
+            else if (api == ActiveAPI::Vulkan) api_name = "Vulkan";
+            else if (api == ActiveAPI::OpenGL) api_name = "OpenGL";
+
+            const char* arch = (sizeof(void*) == 8) ? "64-bit" : "32-bit";
+            char buf[64];
+            snprintf(buf, sizeof(buf), TR("API: %s (%s)", "接口: %s (%s)"), api_name, arch);
+            OSDTextColored(ColPipeline(), buf);
+        }
+
+        if (g_config.osd_show_resolution) {
+            uint32_t rw = 0, rh = 0;
+            SwapMgr_GetResolution(rw, rh);
+            char buf[64];
+            if (rw > 0 && rh > 0) {
+                snprintf(buf, sizeof(buf), TR("Res: %ux%u", "分辨率: %ux%u"), rw, rh);
+            } else {
+                snprintf(buf, sizeof(buf), TR("Res: N/A", "分辨率: 未知"));
+            }
+            OSDTextColored(ColPipeline(), buf);
+        }
+
+        if (g_config.osd_show_flip_model) {
+            const char* flip_str = SwapMgr_GetPresentationModelString();
+            char buf[128];
+            snprintf(buf, sizeof(buf), TR("Flip Model: %s", "翻转模式: %s"), flip_str);
+            OSDTextColored(ColPipeline(), buf);
+        }
 
         // ═══════════════════════════════════
         // SYSTEM (grey — hardware sensors)

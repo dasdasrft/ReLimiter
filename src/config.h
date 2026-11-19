@@ -104,6 +104,11 @@ struct Config {
     bool osd_show_cpu_usage = false;
     bool osd_show_ram = false;
 
+    // OSD: Display & API
+    bool osd_show_api = false;
+    bool osd_show_resolution = false;
+    bool osd_show_flip_model = false;
+
     // OSD: DLSS info
     bool osd_show_dlss_quality = false;
     bool osd_show_dlss_features = false;
@@ -173,6 +178,9 @@ struct OSDPreset {
     bool show_vram = false;
     bool show_cpu_usage = false;
     bool show_ram = false;
+    bool show_api = false;
+    bool show_resolution = false;
+    bool show_flip_model = false;
     bool show_dlss_quality = false;
     bool show_dlss_features = false;
     bool show_dlss_resolution = false;

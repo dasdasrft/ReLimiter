@@ -9,10 +9,13 @@
 #include "reflex_inject.h"
 #include "pcl_hooks.h"
 #include "streamline_hooks.h"
+#include "flip_model.h"
 #include "logger.h"
 #include <dxgi.h>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
+#include <string>
 #include <tlhelp32.h>
 
 // ── File-static state (sole owner — no extern globals) ──
@@ -23,6 +26,11 @@ static std::atomic<uint64_t>   s_vk_device{0};           // VkDevice (Vulkan onl
 static HWND                    s_hwnd = nullptr;          // swapchain-derived, set once per init
 static std::atomic<bool>       s_recapture_flag{false};   // set on init, consumed by present
 static std::atomic<bool>       s_valid{false};            // true when a swapchain is cached
+static std::atomic<uint32_t>   s_render_width{0};
+static std::atomic<uint32_t>   s_render_height{0};
+static std::atomic<uint32_t>   s_present_mode{0};
+static std::atomic<uint32_t>   s_present_flags{0};
+static std::atomic<bool>       s_has_present_mode{false};
 
 // ── Internal helpers ──
 
@@ -222,6 +230,37 @@ void SwapMgr_OnInitSwapchain(reshade::api::swapchain* sc, bool resize) {
     s_native_handle.store(native, std::memory_order_relaxed);
     s_valid.store(true, std::memory_order_relaxed);
 
+    // Query render resolution and presentation mode
+    if (sc) {
+        reshade::api::resource bb = sc->get_current_back_buffer();
+        if (bb.handle != 0 && dev) {
+            reshade::api::resource_desc rdesc = dev->get_resource_desc(bb);
+            if (rdesc.texture.width > 0 && rdesc.texture.height > 0) {
+                s_render_width.store(rdesc.texture.width, std::memory_order_relaxed);
+                s_render_height.store(rdesc.texture.height, std::memory_order_relaxed);
+            }
+        }
+        if (api == ActiveAPI::DX11 || api == ActiveAPI::DX12) {
+            if (native) {
+                __try {
+                    auto* dxgi_sc = reinterpret_cast<IDXGISwapChain*>(native);
+                    DXGI_SWAP_CHAIN_DESC desc = {};
+                    if (SUCCEEDED(dxgi_sc->GetDesc(&desc))) {
+                        if (desc.BufferDesc.Width > 0 && desc.BufferDesc.Height > 0) {
+                            s_render_width.store(desc.BufferDesc.Width, std::memory_order_relaxed);
+                            s_render_height.store(desc.BufferDesc.Height, std::memory_order_relaxed);
+                        }
+                        s_present_mode.store(desc.SwapEffect, std::memory_order_relaxed);
+                        s_present_flags.store(desc.Flags, std::memory_order_relaxed);
+                        s_has_present_mode.store(true, std::memory_order_relaxed);
+                    }
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    LOG_WARN("SwapMgr: exception reading DXGI swapchain desc");
+                }
+            }
+        }
+    }
+
     // Store VkDevice for Vulkan
     if (api == ActiveAPI::Vulkan && dev) {
         s_vk_device.store(dev->get_native(), std::memory_order_relaxed);
@@ -359,4 +398,98 @@ uint64_t SwapMgr_GetVkDevice() {
 
 bool SwapMgr_ConsumeRecaptureFlag() {
     return s_recapture_flag.exchange(false, std::memory_order_relaxed);
+}
+
+void SwapMgr_OnCreateSwapchain(uint32_t width, uint32_t height, uint32_t present_mode, uint32_t present_flags) {
+    if (width > 0 && height > 0) {
+        s_render_width.store(width, std::memory_order_relaxed);
+        s_render_height.store(height, std::memory_order_relaxed);
+    }
+    s_present_mode.store(present_mode, std::memory_order_relaxed);
+    s_present_flags.store(present_flags, std::memory_order_relaxed);
+    s_has_present_mode.store(true, std::memory_order_relaxed);
+}
+
+void SwapMgr_GetResolution(uint32_t& width, uint32_t& height) {
+    width = s_render_width.load(std::memory_order_relaxed);
+    height = s_render_height.load(std::memory_order_relaxed);
+}
+
+uint32_t SwapMgr_GetPresentMode() {
+    return s_present_mode.load(std::memory_order_relaxed);
+}
+
+uint32_t SwapMgr_GetPresentFlags() {
+    return s_present_flags.load(std::memory_order_relaxed);
+}
+
+const char* SwapMgr_GetPresentationModelString() {
+    static char s_buf[128];
+    ActiveAPI api = s_active_api.load(std::memory_order_relaxed);
+    uint32_t mode = s_present_mode.load(std::memory_order_relaxed);
+    uint32_t flags = s_present_flags.load(std::memory_order_relaxed);
+    bool has_mode = s_has_present_mode.load(std::memory_order_relaxed);
+
+    const char* base_mode = "Unknown";
+    if (api == ActiveAPI::DX11 || api == ActiveAPI::DX12) {
+        switch (mode) {
+            case 4: /* DXGI_SWAP_EFFECT_FLIP_DISCARD */
+                base_mode = "FLIP_DISCARD";
+                break;
+            case 3: /* DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL */
+                base_mode = "FLIP_SEQUENTIAL";
+                break;
+            case 0: /* DXGI_SWAP_EFFECT_DISCARD */
+                base_mode = "DISCARD (BitBlt)";
+                break;
+            case 1: /* DXGI_SWAP_EFFECT_SEQUENTIAL */
+                base_mode = "SEQUENTIAL (BitBlt)";
+                break;
+            default:
+                base_mode = (api == ActiveAPI::DX12) ? "FLIP_DISCARD" : "DXGI";
+                break;
+        }
+        bool upgraded = FlipModel_WasApplied();
+        bool tearing = (flags & 2048 /* DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING */) != 0;
+        if (upgraded && tearing) {
+            snprintf(s_buf, sizeof(s_buf), "%s [Upgraded, VRR]", base_mode);
+        } else if (upgraded) {
+            snprintf(s_buf, sizeof(s_buf), "%s [Upgraded]", base_mode);
+        } else if (tearing) {
+            snprintf(s_buf, sizeof(s_buf), "%s [VRR]", base_mode);
+        } else {
+            snprintf(s_buf, sizeof(s_buf), "%s", base_mode);
+        }
+        return s_buf;
+    } else if (api == ActiveAPI::Vulkan) {
+        switch (mode) {
+            case 0: return "IMMEDIATE (Vulkan)";
+            case 1: return "MAILBOX (Vulkan)";
+            case 2: return "FIFO (Vulkan)";
+            case 3: return "FIFO_RELAXED (Vulkan)";
+            default:
+                if (has_mode) {
+                    snprintf(s_buf, sizeof(s_buf), "VkPresentMode %u", mode);
+                    return s_buf;
+                }
+                return "FIFO (Vulkan)";
+        }
+    } else if (api == ActiveAPI::DX9) {
+        switch (mode) {
+            case 5: return "FLIPEX (Flip Model)";
+            case 1: return "DISCARD (BitBlt)";
+            case 2: return "FLIP (BitBlt)";
+            case 3: return "COPY (BitBlt)";
+            case 4: return "OVERLAY";
+            default:
+                if (has_mode) {
+                    snprintf(s_buf, sizeof(s_buf), "D3D9 (%u)", mode);
+                    return s_buf;
+                }
+                return "D3D9";
+        }
+    } else if (api == ActiveAPI::OpenGL) {
+        return "OpenGL";
+    }
+    return "Unknown";
 }

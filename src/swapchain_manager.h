@@ -16,14 +16,19 @@ void SwapMgr_OnInitSwapchain(reshade::api::swapchain* sc, bool resize);
 void SwapMgr_OnDestroySwapchain(reshade::api::swapchain* sc, bool resize);
 void SwapMgr_OnInitDevice(reshade::api::device* device);
 void SwapMgr_OnDestroyDevice(reshade::api::device* device);
+void SwapMgr_OnCreateSwapchain(uint32_t width, uint32_t height, uint32_t present_mode, uint32_t present_flags);
 
 // ── Query interface — thread-safe, lock-free reads ──
 
-ActiveAPI  SwapMgr_GetActiveAPI();
-uint64_t   SwapMgr_GetNativeHandle();   // IDXGISwapChain* or VkSwapchainKHR
-HWND       SwapMgr_GetHWND();
-bool       SwapMgr_IsValid();           // true if a swapchain is cached
-uint64_t   SwapMgr_GetVkDevice();       // VkDevice handle (Vulkan only)
+ActiveAPI   SwapMgr_GetActiveAPI();
+uint64_t    SwapMgr_GetNativeHandle();   // IDXGISwapChain* or VkSwapchainKHR
+HWND        SwapMgr_GetHWND();
+bool        SwapMgr_IsValid();           // true if a swapchain is cached
+uint64_t    SwapMgr_GetVkDevice();       // VkDevice handle (Vulkan only)
+void        SwapMgr_GetResolution(uint32_t& width, uint32_t& height);
+uint32_t    SwapMgr_GetPresentMode();
+uint32_t    SwapMgr_GetPresentFlags();
+const char* SwapMgr_GetPresentationModelString();
 
 // Returns true (once) after a new swapchain init, signaling the present
 // callback to re-capture the presenting swapchain for correlator/display.

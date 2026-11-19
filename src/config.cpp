@@ -205,6 +205,9 @@ void LoadConfig(HMODULE hModule) {
     g_config.osd_show_vram           = ReadINIBool(S, "osd_show_vram", false, P);
     g_config.osd_show_cpu_usage      = ReadINIBool(S, "osd_show_cpu_usage", false, P);
     g_config.osd_show_ram            = ReadINIBool(S, "osd_show_ram", false, P);
+    g_config.osd_show_api            = ReadINIBool(S, "osd_show_api", false, P);
+    g_config.osd_show_resolution     = ReadINIBool(S, "osd_show_resolution", false, P);
+    g_config.osd_show_flip_model     = ReadINIBool(S, "osd_show_flip_model", false, P);
     g_config.osd_show_dlss_quality   = ReadINIBool(S, "osd_show_dlss_quality", false, P);
     g_config.osd_show_dlss_features  = ReadINIBool(S, "osd_show_dlss_features", false, P);
     g_config.osd_show_dlss_resolution = ReadINIBool(S, "osd_show_dlss_resolution", false, P);
@@ -336,6 +339,9 @@ void SaveConfig() {
     WriteINIBool(S, "osd_show_vram", g_config.osd_show_vram, P);
     WriteINIBool(S, "osd_show_cpu_usage", g_config.osd_show_cpu_usage, P);
     WriteINIBool(S, "osd_show_ram", g_config.osd_show_ram, P);
+    WriteINIBool(S, "osd_show_api", g_config.osd_show_api, P);
+    WriteINIBool(S, "osd_show_resolution", g_config.osd_show_resolution, P);
+    WriteINIBool(S, "osd_show_flip_model", g_config.osd_show_flip_model, P);
     WriteINIBool(S, "osd_show_dlss_quality", g_config.osd_show_dlss_quality, P);
     WriteINIBool(S, "osd_show_dlss_features", g_config.osd_show_dlss_features, P);
     WriteINIBool(S, "osd_show_dlss_resolution", g_config.osd_show_dlss_resolution, P);
@@ -480,6 +486,9 @@ OSDPreset OSDPreset_FromConfig() {
     p.show_vram             = g_config.osd_show_vram;
     p.show_cpu_usage        = g_config.osd_show_cpu_usage;
     p.show_ram              = g_config.osd_show_ram;
+    p.show_api              = g_config.osd_show_api;
+    p.show_resolution       = g_config.osd_show_resolution;
+    p.show_flip_model       = g_config.osd_show_flip_model;
     p.show_dlss_quality     = g_config.osd_show_dlss_quality;
     p.show_dlss_features    = g_config.osd_show_dlss_features;
     p.show_dlss_resolution  = g_config.osd_show_dlss_resolution;
@@ -516,6 +525,9 @@ void OSDPreset_ApplyToConfig(const OSDPreset& p) {
     g_config.osd_show_vram             = p.show_vram;
     g_config.osd_show_cpu_usage        = p.show_cpu_usage;
     g_config.osd_show_ram              = p.show_ram;
+    g_config.osd_show_api              = p.show_api;
+    g_config.osd_show_resolution       = p.show_resolution;
+    g_config.osd_show_flip_model       = p.show_flip_model;
     g_config.osd_show_dlss_quality     = p.show_dlss_quality;
     g_config.osd_show_dlss_features    = p.show_dlss_features;
     g_config.osd_show_dlss_resolution  = p.show_dlss_resolution;
@@ -546,6 +558,9 @@ void OSDPreset_ApplyTogglesOnly(const OSDPreset& p) {
     g_config.osd_show_vram             = p.show_vram;
     g_config.osd_show_cpu_usage        = p.show_cpu_usage;
     g_config.osd_show_ram              = p.show_ram;
+    g_config.osd_show_api              = p.show_api;
+    g_config.osd_show_resolution       = p.show_resolution;
+    g_config.osd_show_flip_model       = p.show_flip_model;
     g_config.osd_show_dlss_quality     = p.show_dlss_quality;
     g_config.osd_show_dlss_features    = p.show_dlss_features;
     g_config.osd_show_dlss_resolution  = p.show_dlss_resolution;
@@ -613,6 +628,9 @@ static void ReadPresetFromINI(int i, const char* P) {
     p.show_vram             = ReadINIBool(S, "show_vram", false, P);
     p.show_cpu_usage        = ReadINIBool(S, "show_cpu_usage", false, P);
     p.show_ram              = ReadINIBool(S, "show_ram", false, P);
+    p.show_api              = ReadINIBool(S, "show_api", false, P);
+    p.show_resolution       = ReadINIBool(S, "show_resolution", false, P);
+    p.show_flip_model       = ReadINIBool(S, "show_flip_model", false, P);
     p.show_dlss_quality     = ReadINIBool(S, "show_dlss_quality", false, P);
     p.show_dlss_features    = ReadINIBool(S, "show_dlss_features", false, P);
     p.show_dlss_resolution  = ReadINIBool(S, "show_dlss_resolution", false, P);
@@ -656,6 +674,9 @@ static void ReadDefaultPresetFromINI(const char* P) {
     s_default_preset.show_vram          = ReadINIBool(S, "show_vram", false, P);
     s_default_preset.show_cpu_usage     = ReadINIBool(S, "show_cpu_usage", false, P);
     s_default_preset.show_ram           = ReadINIBool(S, "show_ram", false, P);
+    s_default_preset.show_api           = ReadINIBool(S, "show_api", false, P);
+    s_default_preset.show_resolution    = ReadINIBool(S, "show_resolution", false, P);
+    s_default_preset.show_flip_model    = ReadINIBool(S, "show_flip_model", false, P);
     s_default_preset.show_dlss_quality  = ReadINIBool(S, "show_dlss_quality", false, P);
     s_default_preset.show_dlss_features = ReadINIBool(S, "show_dlss_features", false, P);
     s_default_preset.show_dlss_resolution = ReadINIBool(S, "show_dlss_resolution", false, P);
@@ -743,6 +764,9 @@ void OSDPreset_SaveSlot(int slot) {
     WriteINIBool(S, "show_vram", p.show_vram, P);
     WriteINIBool(S, "show_cpu_usage", p.show_cpu_usage, P);
     WriteINIBool(S, "show_ram", p.show_ram, P);
+    WriteINIBool(S, "show_api", p.show_api, P);
+    WriteINIBool(S, "show_resolution", p.show_resolution, P);
+    WriteINIBool(S, "show_flip_model", p.show_flip_model, P);
     WriteINIBool(S, "show_dlss_quality", p.show_dlss_quality, P);
     WriteINIBool(S, "show_dlss_features", p.show_dlss_features, P);
     WriteINIBool(S, "show_dlss_resolution", p.show_dlss_resolution, P);
@@ -827,6 +851,9 @@ void OSDPreset_SaveDefault(const OSDPreset& p) {
     WriteINIBool(S, "show_vram", p.show_vram, P);
     WriteINIBool(S, "show_cpu_usage", p.show_cpu_usage, P);
     WriteINIBool(S, "show_ram", p.show_ram, P);
+    WriteINIBool(S, "show_api", p.show_api, P);
+    WriteINIBool(S, "show_resolution", p.show_resolution, P);
+    WriteINIBool(S, "show_flip_model", p.show_flip_model, P);
     WriteINIBool(S, "show_dlss_quality", p.show_dlss_quality, P);
     WriteINIBool(S, "show_dlss_features", p.show_dlss_features, P);
     WriteINIBool(S, "show_dlss_resolution", p.show_dlss_resolution, P);

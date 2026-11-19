@@ -184,6 +184,12 @@ static bool on_create_swapchain(reshade::api::device_api api, reshade::api::swap
         }
     }
 
+    // Capture initial swapchain properties (resolution, flip model, flags)
+    SwapMgr_OnCreateSwapchain(desc.back_buffer.texture.width,
+                              desc.back_buffer.texture.height,
+                              desc.present_mode,
+                              desc.present_flags);
+
     if (g_config.fake_fullscreen && desc.fullscreen_state) {
         desc.fullscreen_state = false;
         LOG_INFO("Fake fullscreen: blocked exclusive fullscreen at swapchain creation");
