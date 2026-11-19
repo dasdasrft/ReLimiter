@@ -610,18 +610,69 @@ static void OnMarker_VRR(uint64_t frameID, int64_t now) {
     // 2. Pure CPU channel: non-sleep CPU work
     double t_cpu = (observed_non_sleep > 0.0) ? observed_non_sleep : 0.0;
 
-    // 3. Bottleneck arbitration and telemetry
-    BottleneckKind bottleneck_kind = BottleneckKind::Unknown;
-    if (t_gpu > 0.0 && t_gpu >= t_cpu * 0.95) {
-        bottleneck_kind = BottleneckKind::GpuBound;
-    } else if (t_cpu > 0.0) {
-        bottleneck_kind = BottleneckKind::CpuBound;
+    // 3. Bottleneck arbitration with low-pass EMA filter, hysteresis deadband, and streak debouncing.
+    // Prevents frame-to-frame flapping between GPU Bound and CPU Bound when workloads are near parity.
+    static double s_ema_t_gpu = 0.0;
+    static double s_ema_t_cpu = 0.0;
+    if (t_gpu > 0.0) {
+        s_ema_t_gpu = (s_ema_t_gpu > 0.0) ? s_ema_t_gpu + 0.12 * (t_gpu - s_ema_t_gpu) : t_gpu;
     }
-    g_bottleneck_kind.store(bottleneck_kind, std::memory_order_relaxed);
-    g_telemetry_gpu_work_us.store(t_gpu, std::memory_order_relaxed);
-    g_telemetry_cpu_work_us.store(t_cpu, std::memory_order_relaxed);
+    if (t_cpu > 0.0) {
+        s_ema_t_cpu = (s_ema_t_cpu > 0.0) ? s_ema_t_cpu + 0.12 * (t_cpu - s_ema_t_cpu) : t_cpu;
+    }
 
-    double bottleneck_work = (std::max)(t_gpu, t_cpu);
+    double smoothed_gpu = (s_ema_t_gpu > 0.0) ? s_ema_t_gpu : t_gpu;
+    double smoothed_cpu = (s_ema_t_cpu > 0.0) ? s_ema_t_cpu : t_cpu;
+
+    // Check if both channels are well below the target interval when limiter is actively pacing
+    bool limiter_pacing = (target_fps > 0 && effective_interval > 0.0);
+    bool under_target = (limiter_pacing &&
+                         smoothed_gpu < effective_interval * 0.88 &&
+                         smoothed_cpu < effective_interval * 0.88);
+
+    static BottleneckKind s_stable_bottleneck = BottleneckKind::Unknown;
+    static BottleneckKind s_candidate_bottleneck = BottleneckKind::Unknown;
+    static int s_bottleneck_streak = 0;
+
+    BottleneckKind instant_kind = BottleneckKind::Unknown;
+    if (under_target) {
+        // Headroom is ample; workload is bounded by the limiter, not saturated hardware
+        instant_kind = BottleneckKind::Unknown;
+    } else if (smoothed_gpu > 0.0 && smoothed_cpu > 0.0) {
+        // 8% hysteresis deadband around equality
+        if (smoothed_gpu > smoothed_cpu * 1.08) {
+            instant_kind = BottleneckKind::GpuBound;
+        } else if (smoothed_cpu > smoothed_gpu * 1.08) {
+            instant_kind = BottleneckKind::CpuBound;
+        } else {
+            // Within 8% deadband: maintain current stable bottleneck to prevent oscillation
+            instant_kind = (s_stable_bottleneck != BottleneckKind::Unknown)
+                ? s_stable_bottleneck
+                : BottleneckKind::Unknown;
+        }
+    } else if (smoothed_gpu > 0.0) {
+        instant_kind = BottleneckKind::GpuBound;
+    } else if (smoothed_cpu > 0.0) {
+        instant_kind = BottleneckKind::CpuBound;
+    }
+
+    // Debounce / Streak Filter: require 8 consecutive frames before committing a state transition
+    if (instant_kind == s_candidate_bottleneck) {
+        s_bottleneck_streak++;
+        if (s_bottleneck_streak >= 8) {
+            s_stable_bottleneck = instant_kind;
+        }
+    } else {
+        s_candidate_bottleneck = instant_kind;
+        s_bottleneck_streak = 1;
+    }
+
+    BottleneckKind bottleneck_kind = s_stable_bottleneck;
+    g_bottleneck_kind.store(bottleneck_kind, std::memory_order_relaxed);
+    g_telemetry_gpu_work_us.store(smoothed_gpu, std::memory_order_relaxed);
+    g_telemetry_cpu_work_us.store(smoothed_cpu, std::memory_order_relaxed);
+
+    double bottleneck_work = (std::max)(smoothed_gpu, smoothed_cpu);
 
     // ── Adaptive smoothing: P99-based interval extension ──
     // Tracks max(T_gpu, T_cpu) to guarantee pacing whether GPU-bound or CPU-bound.
