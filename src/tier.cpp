@@ -58,7 +58,6 @@ Tier CheckTier() {
     }
 
     // Marker-based paths: correlator intentionally disabled, skip T2b check
-    EnforcementPath path = EnfDisp_GetActivePath();
     if (path == EnforcementPath::NvAPIMarkers || path == EnforcementPath::PCLMarkers) {
         if (!IsNvAPIAvailable())
             return Tier1;

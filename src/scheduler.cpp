@@ -266,6 +266,15 @@ void OnMarker(uint64_t frameID, int64_t now) {
             g_actual_frame_time_us.store(telemetry_ft, std::memory_order_relaxed);
         }
 
+        double output_fps = g_output_fps.load(std::memory_order_relaxed);
+        double render_fps = (telemetry_ft > 0.0) ? 1000000.0 / telemetry_ft : 0.0;
+        double real_fg_divisor = 1.0;
+        if (output_fps > 1.0 && render_fps > 1.0) {
+            double ratio = output_fps / render_fps;
+            if (ratio >= 1.5)
+                real_fg_divisor = ratio;
+        }
+
         // Pure passthrough — no pacing, just record telemetry.
         g_predictor.OnEnforcement(frameID, ts);
 

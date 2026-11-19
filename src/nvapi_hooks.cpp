@@ -29,6 +29,7 @@ std::atomic<uint32_t> g_game_requested_interval{0};
 // PRESENT_START gate timing — now owned by presentation_gate.cpp
 // (g_last_gate_sleep_us declared in presentation_gate.h)
 
+#ifdef _WIN64
 // ── RTSS filter ──
 static HMODULE g_rtss = nullptr;
 
@@ -43,6 +44,7 @@ static bool CallerIsRTSS() {
         (LPCWSTR)_ReturnAddress(), &caller);
     return caller == g_rtss;
 }
+#endif // _WIN64
 
 // ── Game's original sleep mode params (for restore on shutdown) ──
 static NV_SET_SLEEP_MODE_PARAMS s_game_original_params = {};
