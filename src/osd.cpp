@@ -1881,6 +1881,19 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
     // screen bounds and sits flush against whichever edge it's near.
     float pivot_x = (g_config.osd_x > 0.5f) ? 1.0f : 0.0f;
     float pivot_y = (g_config.osd_y > 0.5f) ? 1.0f : 0.0f;
+
+    // Prevent OSD from overflowing the screen boundary when scaled up
+    static ImVec2 s_last_osd_size = {0.0f, 0.0f};
+    if (s_last_osd_size.y > 0.0f && display.y > 0.0f) {
+        constexpr float MARGIN = 8.0f;
+        if (pivot_y == 0.0f && px_y + s_last_osd_size.y > display.y - MARGIN) {
+            px_y = (std::max)(MARGIN, display.y - s_last_osd_size.y - MARGIN);
+        }
+        if (pivot_x == 0.0f && px_x + s_last_osd_size.x > display.x - MARGIN) {
+            px_x = (std::max)(MARGIN, display.x - s_last_osd_size.x - MARGIN);
+        }
+    }
+
     ImGui::SetNextWindowPos({px_x, px_y}, ImGuiCond_Always, {pivot_x, pivot_y});
     ImGui::SetNextWindowBgAlpha(g_config.osd_opacity);
 
@@ -2238,9 +2251,11 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
             float scale_max = s_graph_scale_max;
             float scale_mid = (scale_min + scale_max) * 0.5f;
 
-            constexpr float GRAPH_W = 300.0f;
-            constexpr float GRAPH_H = 80.0f;
-            constexpr float LABEL_W = 40.0f;
+            float font_size = ImGui::GetFontSize();
+            float graph_w = std::clamp(280.0f * scale, 180.0f, 600.0f);
+            float graph_h = std::clamp(65.0f * scale, 35.0f, 150.0f);
+            float label_w = ImGui::CalcTextSize("999").x + 6.0f;
+            if (label_w < 32.0f * scale) label_w = 32.0f * scale;
 
             char top_label[16], mid_label[16], bot_label[16];
             snprintf(top_label, sizeof(top_label), "%.0f", scale_max);
@@ -2252,19 +2267,21 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
             ImGui::GetWindowDrawList()->AddText(
                 {cursor.x, cursor.y}, 0xFFCCCCCC, top_label);
             ImGui::GetWindowDrawList()->AddText(
-                {cursor.x, cursor.y + GRAPH_H * 0.5f - 6.0f}, 0xFFCCCCCC, mid_label);
+                {cursor.x, cursor.y + (graph_h - font_size) * 0.5f}, 0xFFCCCCCC, mid_label);
             ImGui::GetWindowDrawList()->AddText(
-                {cursor.x, cursor.y + GRAPH_H - 12.0f}, 0xFFCCCCCC, bot_label);
+                {cursor.x, cursor.y + graph_h - font_size}, 0xFFCCCCCC, bot_label);
 
-            ImGui::SetCursorScreenPos({cursor.x + LABEL_W, cursor.y});
+            ImGui::SetCursorScreenPos({cursor.x + label_w, cursor.y});
             ImGui::PlotLines("##ft_graph", ordered, FT_HISTORY_SIZE,
                              0, nullptr, scale_min, scale_max,
-                             ImVec2(GRAPH_W, GRAPH_H));
+                             ImVec2(graph_w, graph_h));
 
-            ImGui::SetCursorScreenPos({cursor.x, cursor.y + GRAPH_H + 4.0f});
-            ImGui::Dummy({0, 0});
+            // Reserve space for the entire graph block so auto-resize includes it completely
+            ImGui::SetCursorScreenPos({cursor.x, cursor.y + graph_h + 4.0f * scale});
+            ImGui::Dummy(ImVec2(label_w + graph_w, 2.0f * scale));
         }
 
+        s_last_osd_size = ImGui::GetWindowSize();
         ImGui::PopFont();
     }
     ImGui::End();
