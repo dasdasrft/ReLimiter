@@ -2004,11 +2004,14 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
     double total_cost_us = 0.0;
     if (g_config.osd_show_total_frame_cost || g_config.osd_show_gpu_render_time || g_config.osd_show_cpu_latency) {
         total_cost_us = g_reflex_total_frame_cost_us.load(std::memory_order_relaxed);
-        if (total_cost_us <= 0.0 && (gpu_lat_us > 0.0 || cpu_lat_us > 0.0)) {
-            total_cost_us = gpu_lat_us + cpu_lat_us;
+        if (total_cost_us <= 0.0 && ft_ms > 0.0) {
+            total_cost_us = ft_ms * 1000.0;
         }
         if (total_cost_us <= 0.0) {
             total_cost_us = g_measured_render_time_us.load(std::memory_order_relaxed);
+        }
+        if (total_cost_us <= 0.0 && (gpu_lat_us > 0.0 || cpu_lat_us > 0.0)) {
+            total_cost_us = (std::max)(gpu_lat_us, cpu_lat_us);
         }
     }
 
@@ -2017,10 +2020,9 @@ static void DrawModernCardOSD(float scale, double ft_ms) {
         double frame_us = ft_ms * 1000.0;
         if (frame_us > gpu_lat_us) {
             cpu_lat_us = frame_us - gpu_lat_us;
+        } else {
+            cpu_lat_us = frame_us * 0.4;
         }
-    }
-    if (total_cost_us <= 0.0 && (gpu_lat_us > 0.0 || cpu_lat_us > 0.0)) {
-        total_cost_us = gpu_lat_us + cpu_lat_us;
     }
     if (total_cost_us <= 0.0 && ft_ms > 0.0) {
         total_cost_us = ft_ms * 1000.0;
