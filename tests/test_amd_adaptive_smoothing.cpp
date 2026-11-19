@@ -61,21 +61,25 @@ struct TestAdaptiveSmoothing {
             smoothed_offset_us = 0.0;
             return 0.0;
         }
-        if (bottleneck_work_us > effective_interval_us * 3.0)
+
+        // Outlier rejection based on adapted interval and 50ms cap
+        double current_adapted_us = effective_interval_us + smoothed_offset_us;
+        double max_plausible_us = (std::max)(current_adapted_us * 3.0, 50000.0);
+        if (bottleneck_work_us > max_plausible_us)
             return smoothed_offset_us;
 
         if (primary.Size() >= 32) {
             double median = primary.Percentile(0.5);
-            if (bottleneck_work_us > median * 3.0) {
+            if (bottleneck_work_us > 33333.0 && bottleneck_work_us > median * 3.0) {
                 consecutive_outliers++;
-                if (consecutive_outliers >= 8) {
+                if (consecutive_outliers >= 4) {
                     consecutive_outliers = 0;
                     SoftReset();
                 } else {
                     return smoothed_offset_us;
                 }
             } else {
-                consecutive_outliers = 0;
+                consecutive_outliers = (consecutive_outliers > 0) ? (consecutive_outliers - 1) : 0;
             }
         }
 
@@ -95,7 +99,11 @@ struct TestAdaptiveSmoothing {
         if (dual_mode && short_win.Size() >= 16 && long_win.Size() >= 32) {
             double short_p = short_win.Percentile(target_percentile);
             double long_p  = long_win.Percentile(target_percentile);
-            p99 = (std::max)(short_p, long_p);
+            if (short_p > long_p) {
+                p99 = short_p;
+            } else {
+                p99 = (headroom_streak >= 20) ? short_p : long_p;
+            }
         } else {
             p99 = primary.Percentile(target_percentile);
         }
@@ -108,7 +116,8 @@ struct TestAdaptiveSmoothing {
         }
 
         double raw_offset = (std::max)(0.0, effective_p99 - effective_interval_us);
-        double max_offset = effective_interval_us;
+        double max_interval_us = (std::max)(effective_interval_us * 6.0, 50000.0);
+        double max_offset = (std::max)(0.0, max_interval_us - effective_interval_us);
         raw_offset = (std::min)(raw_offset, max_offset);
 
         double alpha = (raw_offset > smoothed_offset_us) ? alpha_attack : alpha_release;
@@ -123,21 +132,30 @@ struct TestAdaptiveSmoothing {
             double current_capped_interval = effective_interval_us + smoothed_offset_us;
             if (smoothed_offset_us > 100.0 && bottleneck_work_us < current_capped_interval * 0.88) {
                 headroom_streak++;
-                if (headroom_streak >= 60) {
+                if (headroom_streak >= 20) {
                     headroom_streak = 0;
-                    if (dual_mode && long_win.Size() > 64) {
-                        auto recent = long_win.TakeLast(64);
-                        long_win.Clear();
-                        for (double v : recent) long_win.Push(v);
-                    }
-                    if (primary.Size() > 64) {
-                        auto recent = primary.TakeLast(64);
+                    size_t keep = (std::min)(static_cast<size_t>(20), primary.Size());
+                    if (keep > 0) {
+                        auto recent_light = primary.TakeLast(keep);
+                        double median_light = recent_light[recent_light.size() / 2];
                         primary.Clear();
-                        for (double v : recent) primary.Push(v);
+                        short_win.Clear();
+                        long_win.Clear();
+                        for (double v : recent_light) {
+                            primary.Push(v);
+                            short_win.Push(v);
+                            long_win.Push(v);
+                        }
+                        while (primary.Size() < 32) {
+                            primary.Push(median_light);
+                            short_win.Push(median_light);
+                            long_win.Push(median_light);
+                        }
+                        fast_convergence_frames = 20;
                     }
                 }
             } else {
-                headroom_streak = (headroom_streak > 4) ? (headroom_streak - 4) : 0;
+                headroom_streak = (headroom_streak > 2) ? (headroom_streak - 2) : 0;
             }
         }
 
@@ -226,6 +244,39 @@ int main() {
     BottleneckKind b2 = (t_gpu > 0.0 && t_gpu >= t_cpu * 0.95) ? BottleneckKind::GpuBound : BottleneckKind::CpuBound;
     assert(b2 == BottleneckKind::CpuBound);
     std::cout << "[PASS] Test 6: Dual bottleneck arbitration correctly identifies GPU vs CPU bound" << std::endl;
+
+    // Test 7: Deep degradation test (47-50 FPS adaptation under high VRR Cap)
+    // Base VRR Cap = 152 FPS (target_interval = 6579 us).
+    // Workload drops to 21,300 us (~47 FPS).
+    // Old clamp locked offset to 6579 us (preventing FPS below 76 FPS).
+    // New design should allow offset > 14,000 us to fully match 21.3ms!
+    TestAdaptiveSmoothing deep_smoother;
+    deep_smoother.enabled = true;
+    deep_smoother.dual_mode = true;
+    deep_smoother.target_percentile = 0.99;
+    deep_smoother.queue_drain_margin_pct = 0.015;
+    double vrr_base_interval = 6579.0; // 152 FPS
+    for (int i = 0; i < 60; i++) {
+        deep_smoother.Update(21300.0, vrr_base_interval, BottleneckKind::GpuBound);
+    }
+    double adapted_interval = vrr_base_interval + deep_smoother.smoothed_offset_us;
+    double adapted_fps = 1000000.0 / adapted_interval;
+    std::cout << "  Deep degradation test: offset=" << deep_smoother.smoothed_offset_us
+              << " us, adapted_interval=" << adapted_interval / 1000.0
+              << " ms, adapted_fps=" << adapted_fps << " FPS" << std::endl;
+    // Offset must exceed old clamp of 6579us and adapt to ~46-48 FPS
+    assert(deep_smoother.smoothed_offset_us > 10000.0);
+    assert(adapted_fps >= 44.0 && adapted_fps <= 48.0);
+    std::cout << "[PASS] Test 7: Deep degradation allows adapting to 47 FPS without VRR Cap clamp" << std::endl;
+
+    // Test 8: Fast release from 47 FPS back to light scene (152 FPS VRR Cap)
+    // Workload suddenly drops to 2400 us (light scene).
+    for (int i = 0; i < 40; i++) {
+        deep_smoother.Update(2400.0, vrr_base_interval, BottleneckKind::GpuBound);
+    }
+    std::cout << "  After 40 light frames, offset dropped to: " << deep_smoother.smoothed_offset_us << " us" << std::endl;
+    assert(deep_smoother.smoothed_offset_us < 500.0);
+    std::cout << "[PASS] Test 8: Fast release smoothly returns to 0 offset on light load" << std::endl;
 
     std::cout << "=== All Refactored Adaptive Smoothing tests passed successfully! ===" << std::endl;
     return 0;

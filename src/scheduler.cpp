@@ -730,7 +730,12 @@ static void OnMarker_VRR(uint64_t frameID, int64_t now) {
         else if (s_last_bottleneck_work > 0.0)
             bottleneck_work = s_last_bottleneck_work;
 
-        if (bottleneck_work >= min_plausible && bottleneck_work < effective_interval * 3.0)
+        // Acceptable frame workload range for adaptive smoothing:
+        // Must allow adapting down to heavy GPU scenes (e.g. 40-50 FPS, 20-25ms) even when base VRR cap is high (e.g. 152 FPS, 6.58ms).
+        // Upper bound: allow up to 50ms (20 FPS) or 3x current adapted interval, whichever is larger.
+        double current_adapted = effective_interval + g_adaptive_smoothing.GetOffset();
+        double max_work_us = (std::max)(current_adapted * 3.0, 50000.0);
+        if (bottleneck_work >= min_plausible && bottleneck_work <= max_work_us)
             smoothing_offset = g_adaptive_smoothing.Update(bottleneck_work, effective_interval, bottleneck_kind);
         else
             smoothing_offset = g_adaptive_smoothing.GetOffset();
