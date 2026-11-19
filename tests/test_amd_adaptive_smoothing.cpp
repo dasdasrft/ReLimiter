@@ -17,9 +17,22 @@ struct TestAdaptiveSmoothing {
     double raw_p99_us = 0.0;
     double ema_alpha = 0.15;
     int    fast_convergence_frames = 0;
+    int    consecutive_outliers = 0;
     bool   dual_mode = false;
     double target_percentile = 0.99;
     bool   enabled = true;
+
+    void SoftReset() {
+        size_t keep = primary.Size() / 4;
+        if (keep > 0) {
+            auto recent = primary.TakeLast(keep);
+            primary.Clear();
+            for (double v : recent) primary.Push(v);
+        }
+        consecutive_outliers = 0;
+        fast_convergence_frames = 32;
+        ema_alpha = 0.30;
+    }
 
     double Update(double render_time_us, double effective_interval_us) {
         if (!enabled || render_time_us <= 0.0 || effective_interval_us <= 0.0) {
@@ -31,8 +44,17 @@ struct TestAdaptiveSmoothing {
 
         if (primary.Size() >= 32) {
             double median = primary.Percentile(0.5);
-            if (render_time_us > median * 3.0)
-                return smoothed_offset_us;
+            if (render_time_us > median * 3.0) {
+                consecutive_outliers++;
+                if (consecutive_outliers >= 8) {
+                    consecutive_outliers = 0;
+                    SoftReset();
+                } else {
+                    return smoothed_offset_us;
+                }
+            } else {
+                consecutive_outliers = 0;
+            }
         }
 
         primary.Push(render_time_us);
@@ -116,6 +138,24 @@ int main() {
     }
     assert(resolved_active == 7850.0);
     std::cout << "[PASS] Test 4: AMD fallback successfully routes measured render time" << std::endl;
+
+    // Test 5: Scene transition / deadlock recovery (Menu 1.5ms -> Gameplay 15ms)
+    TestAdaptiveSmoothing transition_smoother;
+    transition_smoother.enabled = true;
+    // Simulate menu with 60 frames of 1500 us render time
+    for (int i = 0; i < 60; i++) {
+        transition_smoother.Update(1500.0, 16666.0);
+    }
+    assert(transition_smoother.raw_p99_us <= 2000.0);
+
+    // Now transition into heavy gameplay (15000 us render time)
+    // Old implementation deadlocked here forever because 15000 > 1500 * 3
+    for (int i = 0; i < 40; i++) {
+        transition_smoother.Update(15000.0, 16666.0);
+    }
+    // Must successfully adapt to the new scene
+    assert(transition_smoother.raw_p99_us >= 14000.0);
+    std::cout << "[PASS] Test 5: Scene transition deadlock recovery successfully broke through menu lock" << std::endl;
 
     std::cout << "=== All AMD Adaptive Smoothing tests passed successfully! ===" << std::endl;
     return 0;

@@ -32,6 +32,7 @@ struct AdaptiveSmoothing {
     // EMA parameters
     double ema_alpha = 0.15;
     int    fast_convergence_frames = 0;
+    int    consecutive_outliers = 0;
 
     // Configuration (set from g_config at init and on config change)
     bool   dual_mode = false;

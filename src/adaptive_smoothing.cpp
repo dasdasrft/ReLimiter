@@ -24,8 +24,20 @@ double AdaptiveSmoothing::Update(double render_time_us, double effective_interva
     // the signal adaptive smoothing needs. Only activates after 32 samples.
     if (primary.Size() >= 32) {
         double median = primary.Percentile(0.5);
-        if (render_time_us > median * 3.0)
-            return smoothed_offset_us;
+        if (render_time_us > median * 3.0) {
+            consecutive_outliers++;
+            if (consecutive_outliers >= 8) {
+                // Sustained workload shift / scene transition (e.g. menu -> heavy gameplay):
+                // 8 consecutive frames > 3x median is not an isolated stutter.
+                // Reset outlier counter and soft-reset to adapt to the new regime.
+                consecutive_outliers = 0;
+                SoftReset();
+            } else {
+                return smoothed_offset_us;
+            }
+        } else {
+            consecutive_outliers = 0;
+        }
     }
 
     // Push to windows
@@ -112,6 +124,7 @@ void AdaptiveSmoothing::SoftReset() {
     // Accelerate EMA for 32 frames to converge on new distribution
     fast_convergence_frames = 32;
     ema_alpha = 0.30;
+    consecutive_outliers = 0;
 
     LOG_DEBUG("AdaptiveSmoothing: soft reset, retained %zu samples, fast convergence for 32 frames",
               primary.Size());
@@ -125,6 +138,7 @@ void AdaptiveSmoothing::Reset() {
     raw_p99_us = 0.0;
     ema_alpha = 0.15;
     fast_convergence_frames = 0;
+    consecutive_outliers = 0;
 
     g_smoothing_offset_us.store(0.0, std::memory_order_relaxed);
     g_smoothing_p99_us.store(0.0, std::memory_order_relaxed);

@@ -23,7 +23,7 @@ int64_t ApplyDamping(int64_t raw_wake, int64_t now, int64_t last_enforcement_ts)
     // Regime-break guard: shared flag is primary signal
     if (g_regime_break.load(std::memory_order_relaxed)) {
         s_avg_correction = 0.0;
-        g_regime_break.store(false, std::memory_order_relaxed); // consumed
+        // Do not clear g_regime_break here; scheduler.cpp consumes it for adaptive smoothing reset
     } else if (g_predictor.cv > s_prev_cv * 3.0 && g_predictor.cv > 0.10) {
         // Fallback: cv spiked before detector fired
         s_avg_correction = 0.0;
