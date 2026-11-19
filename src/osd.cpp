@@ -425,6 +425,7 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
             p.show_cpu_latency = true;
             p.show_gpu_render_time = true;
             p.show_total_frame_cost = true;
+            p.show_fg_time = true;
             p.show_pqi = true;
             p.show_pqi_breakdown = true;
             p.show_smoothness = true;
@@ -437,10 +438,17 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
             p.show_gpu_power = true;
             p.show_vram = true;
             p.show_cpu_usage = true;
+            p.show_cpu_clock = true;
+            p.show_cpu_power = true;
             p.show_ram = true;
             p.show_api = true;
             p.show_resolution = true;
             p.show_flip_model = true;
+            p.show_dlss_quality = true;
+            p.show_dlss_features = true;
+            p.show_dlss_resolution = true;
+            p.show_dlss_presets = true;
+            p.show_dlss_versions = true;
             OSDPreset_ApplyTogglesOnly(p);
             config_dirty = true;
         }
@@ -609,7 +617,7 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
                     p.show_fps = true; p.show_1pct_low = true; p.show_0_1pct_low = true;
                     p.show_frametime = true; p.show_frametime_graph = true;
                     p.show_cpu_latency = true; p.show_gpu_render_time = true;
-                    p.show_total_frame_cost = true;
+                    p.show_total_frame_cost = true; p.show_fg_time = true;
                     p.show_pqi = true; p.show_pqi_breakdown = true;
                     p.show_smoothness = true; p.show_fg = true; p.show_limiter = true;
                     p.show_adaptive_smoothing = true; p.show_gpu_temp = true;
@@ -2720,7 +2728,7 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
                 p.show_smoothness = true; p.show_fg = true; p.show_limiter = true;
                 p.show_adaptive_smoothing = true; p.show_gpu_temp = true;
                 p.show_gpu_clock = true; p.show_gpu_usage = true; p.show_gpu_power = true; p.show_vram = true;
-                p.show_cpu_usage = true; p.show_ram = true;
+                p.show_cpu_usage = true; p.show_cpu_clock = true; p.show_cpu_power = true; p.show_ram = true;
                 p.show_api = true; p.show_resolution = true; p.show_flip_model = true;
                 p.show_dlss_quality = true; p.show_dlss_features = true;
                 p.show_dlss_resolution = true; p.show_dlss_presets = true;
