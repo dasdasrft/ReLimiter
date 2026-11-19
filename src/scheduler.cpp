@@ -622,15 +622,17 @@ static void OnMarker_VRR(uint64_t frameID, int64_t now) {
     double actual_ft = g_actual_frame_time_us.load(std::memory_order_relaxed);
     double last_own_sleep = s_last_own_sleep_us;
     double last_gate = g_last_gate_sleep_us.load(std::memory_order_relaxed);
-    double observed_non_sleep;
+    double raw_non_sleep;
     if (last_own_sleep > 100.0 && actual_ft > last_own_sleep) {
-        observed_non_sleep = actual_ft - last_own_sleep - last_gate;
-    } else if (actual_ft > 0.0 && actual_ft < effective_interval * 2.0) {
-        observed_non_sleep = actual_ft - last_gate;
+        raw_non_sleep = actual_ft - last_own_sleep - last_gate;
+    } else if (actual_ft > 0.0 && actual_ft < effective_interval * 3.0) {
+        raw_non_sleep = actual_ft - last_gate;
     } else {
-        observed_non_sleep = predicted;
+        raw_non_sleep = predicted;
     }
+    if (raw_non_sleep < 0.0) raw_non_sleep = 0.0;
 
+    double observed_non_sleep = raw_non_sleep;
     if (observed_non_sleep < 100.0)
         observed_non_sleep = (std::min)(predicted, effective_interval);
     observed_non_sleep = (std::min)(observed_non_sleep, effective_interval);
@@ -710,7 +712,11 @@ static void OnMarker_VRR(uint64_t frameID, int64_t now) {
     g_telemetry_gpu_work_us.store(smoothed_gpu, std::memory_order_relaxed);
     g_telemetry_cpu_work_us.store(smoothed_cpu, std::memory_order_relaxed);
 
-    double bottleneck_work = (std::max)(smoothed_gpu, smoothed_cpu);
+    // End-to-end frame workload: in serialized or hybrid CPU/GPU render pipelines,
+    // the true frame production time can exceed individual component times.
+    // Feed the true workload so Adaptive Smoothing gracefully adapts down to the
+    // actual achievable cadence (e.g. 47-50 FPS) instead of choking at target FPS.
+    double bottleneck_work = (std::max)((std::max)(smoothed_gpu, smoothed_cpu), raw_non_sleep);
 
     // ── Adaptive smoothing: P99-based interval extension ──
     // Tracks max(T_gpu, T_cpu) to guarantee pacing whether GPU-bound or CPU-bound.
