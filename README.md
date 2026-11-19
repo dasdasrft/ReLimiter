@@ -1,120 +1,129 @@
-# ReLimiter
+# ReLimiter (AMD Radeon Edition / 中文增强版)
 
-A ReShade addon for frame pacing and FPS limiting on NVIDIA G-Sync / VRR displays. Works with DX12, DX11, Vulkan, and OpenGL games.
+[![Build and Release](https://github.com/dasdasrft/ReLimiter/actions/workflows/release.yml/badge.svg)](https://github.com/dasdasrft/ReLimiter/actions/workflows/release.yml)
+[![GitHub release](https://img.shields.io/github/v/release/dasdasrft/ReLimiter)](https://github.com/dasdasrft/ReLimiter/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Installation
+针对 **AMD Radeon 显卡**（深度适配 RX 9000、RX 7000 及各代 Radeon GPU）与 **FreeSync / VRR 可变刷新率显示器**深度优化的低延迟帧率限制器（ReShade 专用 Addon 插件）。
 
-Install via [RHI (ReShade HDR Installer)](https://github.com/RankFTW/RHI) for the easiest setup — it handles ReShade, ReLimiter, and updates across your entire game library.
+本项目 Fork 自 [RankFTW/ReLimiter](https://github.com/RankFTW/ReLimiter)，在原版优秀帧同步管线的基础上，移除了对 NVIDIA 专有库（NVAPI / NVML）的依赖，重构为 **AMD 原生专用版本**，并完成了**游戏内 OSD 浮层与设置菜单的全面汉化**，修复了多项帧平滑度与低帧统计缺陷。
 
-1. Download and run [RHI](https://github.com/RankFTW/RHI/releases).
-2. Find your game in the library.
-3. Click the ReShade install button on the game card.
-4. Click the ReLimiter install button on the game card.
-5. Launch the game. Open the ReShade overlay to access ReLimiter's settings panel.
+---
 
-**Manual install:** Download `relimiter.addon64` from the [Releases](https://github.com/RankFTW/ReLimiter/releases) page and drop it next to the ReShade DLL in your game folder.
+## 🌟 核心特性与改进
 
-📖 **[Full User Guide](docs/USER_GUIDE.md)** — comprehensive documentation covering every feature, setting, and INI option.
+### 1. AMD Radeon 驱动级原生硬件遥测 (ADL2 PMLog)
+* **多传感器完整监控**：通过 AMD Display Library 2 (ADL2) 的 `PMLog` 高频低开销接口，实时读取并展示：
+  * **GPU 核心温度 (Edge)**、**热点结温 (Hotspot)** 以及 **显存温度 (VRAM)**。
+  * **显卡核心运行频率** 与 **显存频率** (MHz)。
+  * **GPU 图形引擎实时使用率** (%)。
+  * **显卡整卡功耗 (TBP)** (W)。
+* **自愈与设备索引锁定**：修复了多虚拟输出端环境下适配器索引覆写导致监控数据丢失的问题，并在后台线程加入自愈重试，进游戏即刻稳定读数。
 
-## Adaptive Smoothing
+### 2. 重构平滑度抖动算法 (Smoothness)
+* **公认帧间抖动模型**：将平滑度计算从原版粗暴的 `|实际帧时间 - 目标帧时间|` 改为真正的相邻帧生成时间绝对差值 $|FT_t - FT_{t-1}|$。
+* **拒绝误报爆红**：在显卡满载（GPU Bound）或稳定输出 60/120 FPS 的平稳画面下，平滑度精准反映为 **0.02ms ～ 0.15ms（绿色极度平滑）**，不再因为显卡跑不满所设上限而错误爆红（如 5.42ms / 10.53ms）。
 
-Most frame limiters set a fixed target and hope every frame hits it. In practice, render times vary — a complex scene might take 9ms while a simple one takes 7ms. When a frame occasionally exceeds the target interval, you get a stutter.
+### 3. 1% Low 与 0.1% Low 离群值强效过滤
+* **离群暂停帧剔除**：自动过滤 >100ms（<10 FPS）的非游戏战斗帧（如按下 `Home` 呼出 ReShade 菜单、过场加载切场景、Alt-Tab 切屏等停顿帧）。
+* **告别 0 FPS 假象**：彻底消除加载停顿帧污染滑动统计窗口的问题，75 FPS 正常游戏时 1% 低帧稳定反映为 ~70 FPS，58 FPS 时反映为 ~50 FPS，**绝不会再莫名跌落至 0 FPS、1 FPS 或 3 FPS**。
 
-Adaptive Smoothing watches your actual render times and adjusts the FPS cap to a level your GPU can consistently maintain. For example, if your GPU can average 130 FPS but the slowest 1% of frames only manage 121, it sets the cap at 121 so every frame lands on time. When you move to an easier scene, it adapts back up. The result is fewer micro-stutters at the cost of a small FPS reduction you won't notice.
+### 4. PQI (帧节奏质量指数) 智能基准适配
+* 当显卡性能满载（GPU Bound，实际帧率低于目标限制）时，评分基准自动适配为实际帧率中位数，不再把显卡算力瓶颈粗暴惩罚为卡顿，客观真实反映 VRR 步调平稳度。
 
-The percentile slider controls the tradeoff between smoothness and FPS. Higher values like P99 accommodate more of your worst-case frames, giving the smoothest result but a lower cap. Lower values like P50 set the cap closer to your average, keeping FPS higher but allowing more frames to miss their deadline. P99 is the default and recommended for most users.
+### 5. 自适应平滑 (Adaptive Smoothing)
+* 实时追踪显卡长尾渲染耗时，根据 P99 / P50 百分位数自动动态微调帧率上限，以极小的平均帧率代价主动消除微小卡顿（Micro-Stutters）。
+* 支持双窗口保守阻尼模式（64 帧短窗口快速应对突发掉帧，512 帧长窗口平缓恢复，避免镜头切换时帧率频繁抖动跳变）。
 
-**Dual window mode** uses both a short (64-frame) and long (512-frame) sample window, taking the more conservative of the two. This means it reacts quickly to sudden performance drops (the short window catches them fast) but is slower to raise the cap back up (the long window holds the lower value until it's confident the improvement is sustained). Prevents the cap from bouncing up and down during scene transitions.
+### 6. FreeSync / VRR 智能防撕裂限帧
+* 根据显示器实时刷新率，通过公式 $\lfloor Hz - \frac{Hz^2}{3600} \rfloor$ 自动计算防撕裂最佳帧率上限（如 144Hz 设为 138 FPS，240Hz 设为 224 FPS），确保游戏全程落在 G-Sync / FreeSync 硬件刷新窗口内，杜绝画面撕裂并消除 VSync 输入延迟。
 
-DX12+Reflex only. Enable it in the Adaptive Smoothing section of the settings panel.
+### 7. 游戏内 OSD 与设置菜单全中文汉化
+* 完整支持中英文无缝切换，实时监控浮层所有参数（FPS、1% 低帧、延迟、PQI 细项、显卡温度/功耗等）全部根据语言设定自动本土化显示。
 
-## FPS Limiting
+### 8. 窗口管理与屏幕保护套件
+* **防切后台锁定 (Focus Lock)**：阻止游戏在 Alt-Tab 切到其他窗口时检测到焦点丢失，游戏音频与逻辑在后台平稳运行。
+* **后台限帧 (Background FPS)**：切到后台时自动限制帧率，降低发热与功耗。
+* **副屏纯黑遮罩 (Blackout)**：暗室多显示器环境下，一键将副屏纯黑化，彻底杜绝侧方杂光与干扰。
+* **OLED 防烧屏保护 (OLED Care)**：挂机暂离自动黑化屏幕并降频，防止 OLED 面板长时间静态灼伤。
 
-Set a target FPS in the settings panel. **VRR Cap** automatically calculates the safe maximum for your display so you stay inside the G-Sync window without tearing. You can also pick a custom value or disable limiting entirely.
+---
 
-**Background FPS** caps the frame rate when you alt-tab out, saving power and reducing heat.
+## 📥 安装指南
 
-## VSync Override
+### 方法一：直接下载预编译版本（推荐）
 
-Force VSync off (recommended when using the frame limiter), force it on, or leave it at whatever the game sets. Works on DX11, DX12, and OpenGL.
+1. 从本项目 [Releases](https://github.com/dasdasrft/ReLimiter/releases) 页面下载最新发布的 `relimiter.addon64`（绝大多数游戏使用 64 位版本）。
+2. 将 `relimiter.addon64` 复制到你的游戏主程序（`.exe`）同级目录下（即 ReShade 所在目录）。
+3. 启动游戏，按快捷键呼出 ReShade 界面即可看到 **ReLimiter** 设置选项卡。
 
-## Frame Generation
+> [!TIP]
+> **关于中文字体显示**：
+> 若在游戏内 ReShade 界面中看到中文字符显示为问号 `?`，请在 ReShade 的 **[Settings]** 选项卡中，将 **[Font]** 路径设置为系统自带中文字体：
+> ```
+> C:\Windows\Fonts\msyh.ttc
+> ```
+> （微软雅黑）或任何支持中文的 TTF/OTF 字体文件。
 
-ReLimiter detects DLSS Frame Generation automatically and adjusts pacing to match. The OSD shows the current FG mode and multiplier.
+---
 
-**Dynamic MFG** — For DLSS 4.5 Dynamic Multi-Frame Generation, enable DMFG Compatibility in the settings. ReLimiter hands pacing to the driver while continuing to provide OSD and telemetry. Use the Output Cap slider to limit display FPS to your VRR ceiling.
+## 📊 OSD 监控指标对照
 
-**NVIDIA Smooth Motion** is also detected and handled automatically.
+| 指标项目 | 英文标识 | 中文标识 | 说明 |
+| :--- | :--- | :--- | :--- |
+| **实时帧率** | `fps` | **`FPS`** | 实时输出帧率（开启插帧时显示渲染与呈现帧率） |
+| **1% 最低帧** | `1% Low` | **`1% 低帧`** | 剔除过场加载后的真实 1% 稳态最低帧 |
+| **0.1% 极限低帧** | `0.1% Low` | **`0.1% 低帧`** | 极限低帧统计，反映极端偶发掉帧 |
+| **帧生成时间** | `ms` | **`ms`** | 实时帧生成毫秒耗时 |
+| **平滑度** | `Smoothness` | **`平滑度`** | 相邻两帧间隔抖动差（绿 < 0.5ms，黄 < 1.5ms，红 ≥ 1.5ms） |
+| **节奏质量** | `PQI` | **`PQI 评分`** | 0-100% 综合得分（包含节奏稳态、卡顿抑制、准时达成率） |
+| **显卡温度** | `GPU Temp` | **`显卡温度`** | 核心温度、热点结温 (Hotspot) 与显存温度 (VRAM) |
+| **显卡频率** | `GPU Clock` | **`显卡频率`** | 核心频率与显存频率 (MHz) |
+| **显卡占用** | `GPU Load` | **`显卡占用`** | 图形核心实时负载百分比 |
+| **整卡功耗** | `GPU Power` | **`显卡功耗`** | 整卡实时功耗 (W) |
+| **显存占用** | `VRAM` | **`显存占用`** | 当前显存使用量与总量 (MB) |
+| **CPU / 内存** | `CPU Load` / `RAM` | **`CPU 占用`** / **`内存占用`** | 整体处理器与系统内存使用情况 |
 
-## On-Screen Display
+---
 
-The OSD shows real-time stats organized by category:
+## 🛠️ 支持的图形 API
 
-- **Performance** — FPS, 1% Low, 0.1% Low, Frametime, Frametime Graph
-- **Latency** — CPU Latency, GPU Render Time, Total Frame Cost, FG Time
-- **Quality** — PQI (Pacing Quality Index) with optional breakdown, Smoothness
-- **Pipeline** — Frame Generation status, Limiter tier, Adaptive Smoothing
-- **System** — GPU Temp, GPU Clock, GPU Usage, VRAM, CPU Usage, RAM
+| 图形 API | 同步生效方式 | 备注 |
+| :--- | :--- | :--- |
+| **DirectX 12** | Presentation Gate / Reflex 标记 | 完美支持全部特性与自适应平滑 |
+| **DirectX 11** | Present 钩子 / 伪装独占全屏 | 支持 Flip Model 改写，适配高刷 FreeSync |
+| **Vulkan** | Presentation Gate (Vulkan) | 深度适配 Vulkan 帧步调 |
+| **OpenGL** | Present 钩子 | 支持强制垂直同步改写 |
 
-Toggle the OSD on/off with the keybind (default: PageUp). Every element can be individually enabled or disabled in the settings panel.
+---
 
-### OSD Presets
+## 🔨 从源码编译
 
-Use **Min**, **Med**, or **Full** to quickly switch between detail levels. These only change which elements are shown — your overlay position and size stay the same.
+要求环境：
+* **Visual Studio 2022** (含 C++ 桌面开发工作负载及 Windows 10/11 SDK)
+* **CMake 3.20+**
 
-Save your own layouts with the **Save** button. Each custom preset remembers the element selection plus position, scale, and opacity. Click a custom preset to load it, right-click to delete it. Once all slots are used, a **+** button appears to add more.
+```powershell
+# 克隆仓库（包含子模块）
+git clone --recursive https://github.com/dasdasrft/ReLimiter.git
+cd ReLimiter
 
-## Screen Controls
+# 构建 64 位版本
+cmake -B build -A x64
+cmake --build build --config Release
 
-Move the game window between monitors, switch between windowed/borderless/fullscreen, or enable Fake Fullscreen (intercepts exclusive fullscreen and runs as borderless instead).
-
-## Advanced
-
-- **Inject Reflex Markers** — Synthesizes NVIDIA Reflex markers for non-Reflex games, enabling driver-side pacing and GPU clock boost.
-- **Flip Model Override** — Forces DX11 games from bitblt to flip model presentation for true VRR operation. May break some games. Requires restart.
-- **Telemetry Logging** — Records per-frame CSV data for analysis. Toggle in-game with the CSV hotkey (default: F11).
-- **Advanced Logging** — Switches the log file to info-level for troubleshooting.
-
-## Supported APIs
-
-| API | Enforcement | Notes |
-|---|---|---|
-| DX12 | Reflex markers | Full feature set including Adaptive Smoothing and Reflex timing |
-| DX11 | Present-based | Flip Model Override available |
-| Vulkan | Present-based or Streamline PCL | |
-| OpenGL | Present-based | VSync override may not work in all games |
-
-## DLSS Info on OSD
-
-ReLimiter reads DLSS quality mode, render resolution, active features (SR/RR/FG), preset letters, and DLL versions directly from the NGX runtime. This data is shown on the OSD and in the ReShade settings panel.
-
-Replacing the game's DLSS DLLs with newer versions (e.g. dropping an updated `nvngx_dlss.dll` into the game folder) is fine — ReLimiter reads whatever DLL the game loads.
-
-**What to avoid:**
-
-- **Do not override DLSS DLLs globally** via NVIDIA Control Panel or NVIDIA Profile Inspector. The global override replaces the DLL at the driver level, which means the game never loads the file from its own folder. ReLimiter reads versions from the loaded module, so it will show the overridden DLL's version and may not detect it at all if the driver handles loading internally.
-- **Do not set DLSS presets (SR, RR, FG) globally.** ReLimiter reads presets from the per-game driver profile. Global presets apply to all games but are not stored in individual game profiles, so ReLimiter won't see them. Set presets per-game in the NVIDIA App or per-game in Profile Inspector instead.
-
-## Known Limitations
-
-- GPU hardware monitoring (temp, clock, usage, VRAM) is NVIDIA only
-- Adaptive Smoothing and Reflex timing metrics (GPU Render, Frame Cost, FG Time) require DX12 + Reflex
-- Global DLSS DLL overrides (via NVCP/NVPI) may not be read correctly — replace DLLs in the game folder instead
-- Global DLSS preset overrides won't appear on the OSD — set presets per-game in the NVIDIA App or Profile Inspector
-- Some older Vulkan titles may not work
-- OpenGL VSync override depends on how the game manages swap intervals
-
-## Building From Source
-
-Requires Visual Studio 2022+, CMake 3.20+. Dependencies are included as git submodules.
-
+# 构建 32 位版本 (可选)
+cmake -B build32 -A Win32
+cmake --build build32 --config Release
 ```
-git clone --recursive https://github.com/RankFTW/ReLimiter.git
-build.bat
-```
 
-Output: `build/bin/Release/relimiter.addon64`
+编译输出产物位于：
+* 64 位：`build/bin/Release/relimiter.addon64`
+* 32 位：`build32/bin/Release/relimiter.addon32`
 
-## License
+---
 
-MIT — see [LICENSE](LICENSE).
+## 📜 鸣谢与开源许可
+
+* 本项目基于 [RankFTW/ReLimiter](https://github.com/RankFTW/ReLimiter) 进行重构与二次开发，感谢原作者 [RankFTW](https://github.com/RankFTW) 卓越的帧步调设计。
+* 基于 [MIT License](LICENSE) 许可协议开源。

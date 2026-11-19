@@ -3,6 +3,7 @@ name: Build and Release
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -80,7 +81,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.VERSION }}
-          name: ReLimiter v${{ steps.version.outputs.VERSION }}
+          name: ReLimiter v${{ steps.version.outputs.VERSION }} (AMD Radeon Dedicated Edition / 中文版)
           body_path: release_notes.txt
           files: |
             build/bin/Release/relimiter.addon64

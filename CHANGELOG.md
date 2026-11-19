@@ -1,7 +1,16 @@
 # Changelog
 
 
-## 3.3.5
+## 3.4.0
+
+### 新特性与专属重构 (AMD Radeon Dedicated Edition)
+- **AMD Radeon 专属驱动级硬件监控**：深度适配 AMD ADL2 (PMLog) 接口，支持 RX 9000、RX 7000 及各代 AMD 显卡。支持核心温度、热点结温 (Hotspot)、显存温度 (VRAM)、核心/显存实时频率、GPU 图形引擎使用率 (%) 及整卡功耗 (TBP/W)。
+- **平滑度指标（Smoothness）重构**：将抖动算法重构为国际公认的相邻帧生成时间绝对差值 $|FT_t - FT_{t-1}|$，彻底解决在显卡满载（GPU Bound）或稳定帧率下由于与目标帧率做差导致平滑度误报爆红（如 5.42ms / 10.53ms）的问题，画面稳定时准确显示为绿色（0.02ms ~ 0.15ms）。
+- **1% Low / 0.1% Low 离群值强效过滤**：统计窗口自动剔除 >100ms（<10 FPS）的过场动画加载、切屏及 ReShade 菜单开启造成的暂停帧，彻底杜绝极端低帧跌落为 0 FPS、1 FPS 或 3 FPS。
+- **PQI 质量指数智能基准适配**：在显卡性能满载低于目标帧率时，评分基准自动适配为实际帧率中位数，不再误将显卡算力瓶颈判为卡顿。
+- **游戏内 OSD 实时浮层与设置菜单全面汉化**：完整支持中英双语无缝切换，浮层指标随语言自动本土化呈现。
+- **清除所有 NVIDIA NVAPI / NVML 专有残留**：优化适配器自动探测选择与后台轮询自愈机制，轻量纯净。
+
 
 ### Bug Fixes
 - **Fixed OLED Care idle timer not detecting controller input in some games** — The previous gamepad detection method conflicted with games that use exclusive raw input for controllers (e.g. Thumper), breaking in-game controller input entirely. Replaced with XInput polling which has no compatibility issues.
