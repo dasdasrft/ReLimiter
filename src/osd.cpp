@@ -3003,9 +3003,90 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
                 }
             }
 
-            // Reserve space for the entire graph block so auto-resize includes it completely
+            // ── Frametime Analytics & Diagnostics Panel (fills empty space right of graph) ──
+            float sum_ft = 0.0f;
+            int valid_count = 0;
+            float stat_min = 1e9f;
+            float stat_max = 0.0f;
+            int spike_count = 0;
+            for (int i = 0; i < FT_HISTORY_SIZE; i++) {
+                float v = s_ft_history[i];
+                if (v > 0.0f && v <= 100.0f) {
+                    sum_ft += v;
+                    valid_count++;
+                    if (v < stat_min) stat_min = v;
+                    if (v > stat_max) stat_max = v;
+                }
+            }
+            float avg_ft = (valid_count > 0) ? (sum_ft / valid_count) : static_cast<float>(ft_ms);
+            if (stat_min > stat_max) { stat_min = avg_ft; stat_max = avg_ft; }
+
+            float dev_sum = 0.0f;
+            for (int i = 0; i < FT_HISTORY_SIZE; i++) {
+                float v = s_ft_history[i];
+                if (v > 0.0f && v <= 100.0f) {
+                    dev_sum += std::abs(v - avg_ft);
+                    if (v > avg_ft * 1.4f && v > avg_ft + 2.5f) {
+                        spike_count++;
+                    }
+                }
+            }
+            float jitter = (valid_count > 0) ? (dev_sum / valid_count) : 0.0f;
+
+            float right_start_x = cursor.x + label_w + graph_w + 10.0f * scale;
+            float stat_w = std::clamp(130.0f * scale, 110.0f, 220.0f);
+            float line_h = (graph_h - 2.0f) / 4.0f;
+
+            if (is_modern) {
+                // Frosted card container for the analytics module
+                dl->AddRectFilled(
+                    ImVec2(right_start_x - 3.0f * scale, cursor.y - 2.0f),
+                    ImVec2(right_start_x + stat_w + 3.0f * scale, cursor.y + graph_h + 2.0f),
+                    IM_COL32(10, 15, 20, 130),
+                    4.0f * scale
+                );
+                dl->AddRect(
+                    ImVec2(right_start_x - 3.0f * scale, cursor.y - 2.0f),
+                    ImVec2(right_start_x + stat_w + 3.0f * scale, cursor.y + graph_h + 2.0f),
+                    IM_COL32(60, 80, 100, 75),
+                    4.0f * scale, 0, 1.0f
+                );
+            }
+
+            char s1[48], s2[48], s3[48], s4[48];
+            float avg_fps = (avg_ft > 0.0f) ? (1000.0f / avg_ft) : 0.0f;
+            snprintf(s1, sizeof(s1), TR("Avg: %.1f ms (%.0f F)", "均帧: %.1f ms (%.0f F)"), avg_ft, avg_fps);
+            snprintf(s2, sizeof(s2), TR("Range: %.1f / %.1f", "极差: %.1f / %.1f ms"), stat_min, stat_max);
+            snprintf(s3, sizeof(s3), TR("Jitter: +/-%.2f ms", "抖动: +/-%.2f ms"), jitter);
+
+            double ceil_hz = g_ceiling_hz.load(std::memory_order_relaxed);
+            double floor_hz = g_floor_hz.load(std::memory_order_relaxed);
+            PacingMode pmode = g_pacing_mode.load(std::memory_order_relaxed);
+            if (pmode == PacingMode::VRR && ceil_hz > 1.0 && floor_hz > 0.0) {
+                snprintf(s4, sizeof(s4), "VRR: %.0f - %.0f Hz", floor_hz, ceil_hz);
+            } else if (spike_count > 0) {
+                snprintf(s4, sizeof(s4), TR("Spikes: %d", "突发卡顿: %d 次"), spike_count);
+            } else {
+                snprintf(s4, sizeof(s4), TR("Sync: Locked", "同步: 极度平稳"));
+            }
+
+            float b = g_config.osd_text_brightness;
+            ImVec4 col_label = ImVec4(0.72f * b, 0.78f * b, 0.85f * b, 0.95f);
+            ImVec4 col_jitter = (jitter < 0.35f) ? ImVec4(0.35f*b, 0.82f*b, 0.55f*b, 1.0f)
+                              : ((jitter < 1.0f) ? ImVec4(0.95f*b, 0.75f*b, 0.25f*b, 1.0f)
+                              : ImVec4(0.95f*b, 0.35f*b, 0.35f*b, 1.0f));
+            ImVec4 col_s4 = (spike_count > 0) ? ImVec4(0.95f*b, 0.35f*b, 0.35f*b, 1.0f)
+                          : ImVec4(0.55f*b, 0.78f*b, 0.95f*b, 0.95f);
+
+            dl->AddText(ImVec2(right_start_x + 2.0f * scale, cursor.y + line_h * 0.1f), ImGui::ColorConvertFloat4ToU32(col_label), s1);
+            dl->AddText(ImVec2(right_start_x + 2.0f * scale, cursor.y + line_h * 1.1f), ImGui::ColorConvertFloat4ToU32(col_label), s2);
+            dl->AddText(ImVec2(right_start_x + 2.0f * scale, cursor.y + line_h * 2.1f), ImGui::ColorConvertFloat4ToU32(col_jitter), s3);
+            dl->AddText(ImVec2(right_start_x + 2.0f * scale, cursor.y + line_h * 3.1f), ImGui::ColorConvertFloat4ToU32(col_s4), s4);
+
+            // Reserve space for both graph + analytics panel so auto-resize encompasses the entire block
+            float total_w = label_w + graph_w + 10.0f * scale + stat_w + 4.0f * scale;
             ImGui::SetCursorScreenPos({cursor.x, cursor.y + graph_h + 4.0f * scale});
-            ImGui::Dummy(ImVec2(label_w + graph_w, 2.0f * scale));
+            ImGui::Dummy(ImVec2(total_w, 2.0f * scale));
         }
 
         s_last_osd_size = ImGui::GetWindowSize();
