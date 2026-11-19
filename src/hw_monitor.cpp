@@ -235,11 +235,22 @@ typedef int (*PFN_ADL2_Adapter_NumberOfAdapters_Get)(void*, int*);
 typedef int (*PFN_ADL2_OverdriveN_Temperature_Get)(void*, int, int, int*);
 typedef int (*PFN_ADL2_Overdrive6_Temperature_Get)(void*, int, int*);
 
+struct ADLSingleSensorData {
+    int supported;
+    int value;
+};
+struct ADLPMLogDataOutput {
+    int size;
+    ADLSingleSensorData sensors[256];
+};
+typedef int (*PFN_ADL2_New_QueryPMLogData_Get)(void*, int, ADLPMLogDataOutput*);
+
 static PFN_ADL2_Main_Control_Create s_ADL2_Main_Control_Create = nullptr;
 static PFN_ADL2_Main_Control_Destroy s_ADL2_Main_Control_Destroy = nullptr;
 static PFN_ADL2_Adapter_NumberOfAdapters_Get s_ADL2_Adapter_NumberOfAdapters_Get = nullptr;
 static PFN_ADL2_OverdriveN_Temperature_Get s_ADL2_OverdriveN_Temperature_Get = nullptr;
 static PFN_ADL2_Overdrive6_Temperature_Get s_ADL2_Overdrive6_Temperature_Get = nullptr;
+static PFN_ADL2_New_QueryPMLogData_Get s_ADL2_New_QueryPMLogData_Get = nullptr;
 
 static bool InitADL() {
 #ifdef _WIN64
@@ -259,13 +270,16 @@ static bool InitADL() {
         GetProcAddress(s_adl_module, "ADL2_OverdriveN_Temperature_Get"));
     s_ADL2_Overdrive6_Temperature_Get = reinterpret_cast<PFN_ADL2_Overdrive6_Temperature_Get>(
         GetProcAddress(s_adl_module, "ADL2_Overdrive6_Temperature_Get"));
+    s_ADL2_New_QueryPMLogData_Get = reinterpret_cast<PFN_ADL2_New_QueryPMLogData_Get>(
+        GetProcAddress(s_adl_module, "ADL2_New_QueryPMLogData_Get"));
 
     if (s_ADL2_Main_Control_Create && s_ADL2_Main_Control_Create([](int sz) -> void* { return malloc(sz); }, 1, &s_adl_context) == 0 && s_adl_context) {
         int num = 0;
         if (s_ADL2_Adapter_NumberOfAdapters_Get && s_ADL2_Adapter_NumberOfAdapters_Get(s_adl_context, &num) == 0 && num > 0) {
             s_adl_available = true;
             s_adl_adapter_index = 0;
-            LOG_INFO("HWMonitor: AMD ADL2 initialized, adapter_index=%d (total=%d)", s_adl_adapter_index, num);
+            LOG_INFO("HWMonitor: AMD ADL2 initialized, adapter_index=%d (total=%d, PMLog=%s)",
+                     s_adl_adapter_index, num, s_ADL2_New_QueryPMLogData_Get ? "yes" : "no");
             return true;
         }
     }
@@ -377,11 +391,40 @@ static void PollGPU(HWMonitorData& d) {
     }
     } else if (s_adl_available && s_adl_context) {
         __try {
-            int temp = 0;
-            if (s_ADL2_OverdriveN_Temperature_Get && s_ADL2_OverdriveN_Temperature_Get(s_adl_context, s_adl_adapter_index, 1, &temp) == 0 && temp > 0) {
-                d.gpu_temp_c = temp / 1000;
-            } else if (s_ADL2_Overdrive6_Temperature_Get && s_ADL2_Overdrive6_Temperature_Get(s_adl_context, s_adl_adapter_index, &temp) == 0 && temp > 0) {
-                d.gpu_temp_c = temp / 1000;
+            if (s_ADL2_New_QueryPMLogData_Get) {
+                ADLPMLogDataOutput out = {};
+                out.size = sizeof(out);
+                if (s_ADL2_New_QueryPMLogData_Get(s_adl_context, s_adl_adapter_index, &out) == 0) {
+                    // Temperature: Sensor 8 (Edge) or Sensor 27 (Hotspot)
+                    if (out.sensors[8].supported && out.sensors[8].value > 0)
+                        d.gpu_temp_c = out.sensors[8].value;
+                    else if (out.sensors[27].supported && out.sensors[27].value > 0)
+                        d.gpu_temp_c = out.sensors[27].value;
+
+                    // Clocks: Sensor 1 (GFX Core Clock MHz), Sensor 2 (Memory Clock MHz)
+                    if (out.sensors[1].supported && out.sensors[1].value > 0)
+                        d.gpu_clock_mhz = out.sensors[1].value;
+                    if (out.sensors[2].supported && out.sensors[2].value > 0)
+                        d.gpu_mem_clock_mhz = out.sensors[2].value;
+
+                    // GPU Activity / Utilization (%): Sensor 19
+                    if (out.sensors[19].supported && out.sensors[19].value >= 0 && out.sensors[19].value <= 100)
+                        d.gpu_usage_pct = out.sensors[19].value;
+
+                    // Power: Sensor 73 (Total Board Power in Watts)
+                    if (out.sensors[73].supported && out.sensors[73].value > 0)
+                        d.gpu_power_w = out.sensors[73].value;
+                }
+            }
+
+            // Fallback for pre-RDNA cards if PMLog did not populate temperature
+            if (d.gpu_temp_c < 0) {
+                int temp = 0;
+                if (s_ADL2_OverdriveN_Temperature_Get && s_ADL2_OverdriveN_Temperature_Get(s_adl_context, s_adl_adapter_index, 1, &temp) == 0 && temp > 0) {
+                    d.gpu_temp_c = temp / 1000;
+                } else if (s_ADL2_Overdrive6_Temperature_Get && s_ADL2_Overdrive6_Temperature_Get(s_adl_context, s_adl_adapter_index, &temp) == 0 && temp > 0) {
+                    d.gpu_temp_c = temp / 1000;
+                }
             }
         } __except(EXCEPTION_EXECUTE_HANDLER) {}
     }
