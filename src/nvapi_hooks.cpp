@@ -53,6 +53,7 @@ static bool s_game_params_captured = false;
 // Reflex settings when switching from active pacing to uncapped mode.
 static NV_SET_SLEEP_MODE_PARAMS s_game_last_params = {};
 
+#ifdef _WIN64
 // ── Hook: SetSleepMode — capture game params, forward unmodified ──
 static NvAPI_Status __cdecl Hook_SetSleepMode(IUnknown* pDev, NV_SET_SLEEP_MODE_PARAMS* params) {
     if (!g_dev) {
@@ -215,6 +216,7 @@ static NvAPI_Status __cdecl Hook_SetLatencyMarker(IUnknown* dev, NV_LATENCY_MARK
 
     return result;
 }
+#endif // _WIN64
 
 // ── Public API ──
 NvAPI_Status InvokeSetLatencyMarker(IUnknown* dev, NV_LATENCY_MARKER_PARAMS* params) {

@@ -139,16 +139,19 @@ static HRESULT STDMETHODCALLTYPE Hooked_Present(IDXGISwapChain* self, UINT SyncI
 
     UINT override_interval = SyncInterval;
     UINT override_flags = Flags;
+    static bool s_tearing_allowed_for_vsync = true;
 
     if (g_config.vsync_mode == "off") {
         override_interval = 0;
-        // Add ALLOW_TEARING if the swapchain supports it
-        override_flags |= DXGI_PRESENT_ALLOW_TEARING;
+        // Add ALLOW_TEARING only if verified to be supported by the swapchain
+        if (s_tearing_allowed_for_vsync) {
+            override_flags |= DXGI_PRESENT_ALLOW_TEARING;
+        }
         static bool s_off_logged = false;
         if (!s_off_logged) {
             s_off_logged = true;
-            LOG_INFO("VSync: first present with mode=off (interval=0, ALLOW_TEARING added, "
-                     "game_interval=%u, game_flags=0x%X)", SyncInterval, Flags);
+            LOG_INFO("VSync: first present with mode=off (interval=0, ALLOW_TEARING=%d, "
+                     "game_interval=%u, game_flags=0x%X)", s_tearing_allowed_for_vsync ? 1 : 0, SyncInterval, Flags);
         }
     } else if (g_config.vsync_mode == "on") {
         override_interval = 1;
@@ -158,9 +161,10 @@ static HRESULT STDMETHODCALLTYPE Hooked_Present(IDXGISwapChain* self, UINT SyncI
 
     HRESULT hr = s_orig_Present(self, override_interval, override_flags);
 
-    // If ALLOW_TEARING failed (swapchain doesn't support it), retry without
+    // If ALLOW_TEARING failed (swapchain doesn't support it), permanently disable it for this session and retry
     if (hr == DXGI_ERROR_INVALID_CALL && g_config.vsync_mode == "off" &&
         (override_flags & DXGI_PRESENT_ALLOW_TEARING)) {
+        s_tearing_allowed_for_vsync = false;
         static bool s_tearing_fail_logged = false;
         if (!s_tearing_fail_logged) {
             s_tearing_fail_logged = true;

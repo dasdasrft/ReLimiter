@@ -65,8 +65,9 @@ bool IsSwapchainValid() {
     if (api == ActiveAPI::OpenGL || api == ActiveAPI::DX9)
         return SwapMgr_IsValid();
 
-    // DX12 and DX11 both use g_swapchain (set by OnInitSwapchain)
-    return g_swapchain != nullptr &&
+    // DX12 and DX11: swapchain is valid if any tracked swapchain handle is valid
+    bool has_sc = (g_swapchain != nullptr) || (g_presenting_swapchain != nullptr) || SwapMgr_IsValid();
+    return has_sc &&
            !s_swapchain_invalid.load(std::memory_order_relaxed) &&
            !s_device_lost.load(std::memory_order_relaxed) &&
            !s_occluded.load(std::memory_order_relaxed);

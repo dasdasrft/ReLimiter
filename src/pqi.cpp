@@ -54,6 +54,7 @@ static PQIScores ComputeFromWindow(const double* ft, const double* tgt,
     // Reference interval: use target, or median actual frame time if running GPU-bound below target
     double median_ft = sorted[n / 2];
     double ref_interval = (median_ft > avg_target * 1.05) ? median_ft : avg_target;
+    if (ref_interval <= 0.0) ref_interval = 6944.0;
 
     s.cadence = 1.0 - Clamp01(iqr / ref_interval);
 

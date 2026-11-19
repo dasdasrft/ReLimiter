@@ -15,44 +15,11 @@ static bool s_stats_swapchain_is_unwrapped = false;
 using slGetNativeInterface_pfn = int (*)(void* proxy, void** native);
 
 static IDXGISwapChain* TryStreamlineUnwrap(IDXGISwapChain* sc) {
+    (void)sc;
     // DISABLED: Streamline unwrap causes reference count inconsistency
     // that prevents proper swapchain teardown, leading to E_ACCESSDENIED
     // on swapchain recreation and Streamline crash in sl.common.dll.
     // The old correlator never unwrapped — stats work fine without it.
-    return nullptr;
-
-    static HMODULE sl_mod = nullptr;
-    static slGetNativeInterface_pfn sl_func = nullptr;
-    static bool sl_checked = false;
-
-    if (!sl_checked) {
-        sl_checked = true;
-        sl_mod = GetModuleHandleW(L"sl.interposer.dll");
-        if (sl_mod) {
-            sl_func = reinterpret_cast<slGetNativeInterface_pfn>(
-                GetProcAddress(sl_mod, "slGetNativeInterface"));
-            if (sl_func)
-                LOG_INFO("Streamline unwrap function resolved");
-            else
-                LOG_INFO("Streamline loaded but slGetNativeInterface not found");
-        }
-    }
-
-    if (!sl_func) return nullptr;
-
-    void* native = nullptr;
-    if (sl_func(sc, &native) == 0 && native && native != sc) {
-        IDXGISwapChain* real_sc = nullptr;
-        IUnknown* unk = static_cast<IUnknown*>(native);
-        if (SUCCEEDED(unk->QueryInterface(__uuidof(IDXGISwapChain),
-                                           reinterpret_cast<void**>(&real_sc)))) {
-            LOG_INFO("Streamline unwrap: proxy=%p -> real=%p", sc, real_sc);
-            // Keep the AddRef from QueryInterface — caller's lifetime is
-            // tied to the swapchain. Released in OnSwapchainDestroyed.
-            return real_sc;
-        }
-    }
-
     return nullptr;
 }
 

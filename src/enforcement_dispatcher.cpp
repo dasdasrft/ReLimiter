@@ -17,9 +17,9 @@ static std::atomic<ActiveAPI>       s_prev_api{ActiveAPI::None};
 
 // ── Output FPS (all presents including FG) ──
 // Rolling 1-second window of present timestamps. FPS = count of presents
-// in the window. Simple, accurate, no smoothing artifacts.
+// in the window. Supports high-refresh and uncapped games up to 2000+ FPS.
 std::atomic<double> g_output_fps{0.0};
-static constexpr int MAX_PRESENT_TIMESTAMPS = 512; // enough for 500+ FPS
+static constexpr int MAX_PRESENT_TIMESTAMPS = 2048;
 static int64_t s_present_ts[MAX_PRESENT_TIMESTAMPS] = {};
 static int     s_present_head = 0;
 static int     s_present_count = 0;
@@ -103,20 +103,19 @@ void EnfDisp_OnPresent(int64_t now_qpc) {
         if (s_present_count < MAX_PRESENT_TIMESTAMPS)
             s_present_count++;
 
-        // Collect timestamps within the last 1 second into a sorted array
+        // Collect timestamps within the last 1 second
         LARGE_INTEGER freq;
         QueryPerformanceFrequency(&freq);
         int64_t one_sec = freq.QuadPart;
         int64_t cutoff = now_qpc - one_sec;
 
-        static int64_t window_ts[MAX_PRESENT_TIMESTAMPS];
         int wcount = 0;
         for (int i = 0; i < s_present_count; i++) {
             if (s_present_ts[i] >= cutoff)
-                window_ts[wcount++] = s_present_ts[i];
+                wcount++;
         }
 
-        // Output FPS: simply the count of presents in the window
+        // Output FPS: count of presents in the 1-second window
         g_output_fps.store(static_cast<double>(wcount), std::memory_order_relaxed);
 
         // Track frame time from real presents as ground truth when limiter is off

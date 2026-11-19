@@ -26,6 +26,16 @@ Tier CheckTier() {
         s_t4_count = 0;
     }
 
+    EnforcementPath path = EnfDisp_GetActivePath();
+
+    // In Present-based enforcement (Vulkan/DX9/DX11/OpenGL or DX12 non-Reflex),
+    // markers are not expected or required. Do not degrade to Tier 3 when markers
+    // are absent on present-based pacing.
+    if (path == EnforcementPath::PresentBased) {
+        if (!IsSwapchainValid()) return Tier3;
+        return Tier2a;
+    }
+
     // Tier 3: Safety mode — no markers
     if (!AreMarkersFlowing()) {
         if (s_t3_diag_count++ < 3)

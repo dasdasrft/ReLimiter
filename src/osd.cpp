@@ -1943,8 +1943,8 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
             if (divisor >= 2) {
                 display_ft = ft / static_cast<double>(divisor);
             }
-            // Feed 1% low history when actively pacing (T0-T2a) and not in a loading freeze (>100ms)
-            if (g_current_tier < Tier::Tier3 && display_ft <= 100000.0) {
+            // Feed 1% low history for valid frames (excluding pause/loading freezes >100ms)
+            if (display_ft > 0.0 && display_ft <= 100000.0) {
                 s_low_history[s_low_history_idx] = display_ft;
                 s_low_history_idx = (s_low_history_idx + 1) % LOW_HISTORY_SIZE;
                 if (s_low_history_count < LOW_HISTORY_SIZE) s_low_history_count++;
