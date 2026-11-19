@@ -1020,6 +1020,15 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         HelpTip(TR("Intercept exclusive fullscreen and run as borderless window instead. The game still thinks it's in exclusive fullscreen. Takes effect on next fullscreen transition or game restart.",
                    "拦截独占全屏请求并以无边框窗口运行，但欺骗游戏使其认为仍处于独占全屏模式。下一次全屏切换或重启游戏生效。"));
 
+        ImGui::Spacing();
+        if (ImGui::Checkbox(TR("Flip Model Override (DX11)", "强制升级翻转模型 (DX11 Flip Model)"), &g_config.flip_model_override)) config_dirty = true;
+        if (FlipModel_WasApplied()) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "%s", TR("(Active)", "(已生效)"));
+        }
+        HelpTip(TR("Upgrade legacy DX11 DXGI_SWAP_EFFECT_DISCARD (BitBlt) to modern FLIP_DISCARD. Enables FreeSync/G-Sync VRR in borderless/windowed mode and eliminates DWM buffer copy latency. Requires game restart.",
+                   "将 DX11 游戏的老旧 DISCARD (BitBlt) 复制呈现模式无损升级为现代 FLIP_DISCARD 翻转呈现模型。彻底解锁无边框/窗口化下的 FreeSync/G-Sync (VRR)，并消除 DWM 复制延迟。需重启游戏生效。"));
+
         // ── Focus Lock ──
         ImGui::Spacing();
         if (ImGui::Checkbox(TR("Keep Game Focused", "防切后台锁定 (Focus Lock)"), &g_config.focus_lock)) {
