@@ -41,6 +41,9 @@ struct Config {
     float osd_scale = 1.0f;                // 0.5 – 2.0 (50% – 200%)
     bool  osd_drop_shadow = true;
     float osd_text_brightness = 1.0f;      // 0.0 – 1.0
+    std::string osd_style = "card";        // "card" (Modern Card) | "bar" (Horizontal Bar) | "classic" (Legacy List)
+    float osd_rounding = 8.0f;             // 0.0 – 20.0 (pixels)
+    bool  osd_show_target_line = true;     // Target frametime guide line on frametime graph
 
     // Window mode
     std::string window_mode = "default";    // default | borderless | fullscreen
@@ -152,6 +155,7 @@ static constexpr int OSD_MAX_PRESET_SLOTS = 16;
 
 struct OSDPreset {
     char name[32] = {};
+    char osd_style[16] = "card";
     // Position & appearance
     float osd_x = 0.005f;
     float osd_y = 0.005f;

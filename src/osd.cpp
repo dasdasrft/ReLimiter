@@ -34,6 +34,10 @@
 
 // ── OSD readout state ──
 static double s_real_fps = 0.0;
+static double s_display_fps = 0.0;
+static double s_display_render_fps = 0.0;
+static double s_display_output_fps = 0.0;
+static ULONGLONG s_fps_display_tick = 0;
 
 // ── Frametime history for graph ──
 static constexpr int FT_HISTORY_SIZE = 200;
@@ -331,6 +335,35 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         // ── Appearance ──
         ImGui::Spacing();
         ImGui::Text("%s", TR("Appearance", "外观设置"));
+
+        // OSD Style selector
+        const char* style_labels_en[] = { "Modern Card", "Horizontal Bar (Steam Deck)", "Classic List" };
+        const char* style_labels_zh[] = { "现代卡片式 (Modern Card)", "极简顶栏式 (Steam Deck)", "经典列表式 (Classic List)" };
+        const char** style_labels = IsChinese() ? style_labels_zh : style_labels_en;
+        int current_style = 0;
+        if (g_config.osd_style == "bar") current_style = 1;
+        else if (g_config.osd_style == "classic") current_style = 2;
+
+        if (ImGui::BeginCombo(TR("OSD Style", "OSD 风格"), style_labels[current_style])) {
+            for (int i = 0; i < 3; i++) {
+                bool selected = (current_style == i);
+                if (ImGui::Selectable(style_labels[i], selected)) {
+                    const char* styles[] = { "card", "bar", "classic" };
+                    g_config.osd_style = styles[i];
+                    config_dirty = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        HelpTip(TR("Modern Card: sleek grouped badges and cards. Horizontal Bar: compact Steam Deck style top bar. Classic List: traditional vertical text.",
+                   "现代卡片式：圆角悬浮徽标卡片，按硬件模块紧凑聚合；极简顶栏式：类似 Steam Deck 的单行/双行横向悬浮条；经典列表式：传统垂直逐行文本。"));
+
+        if (g_config.osd_style != "classic") {
+            if (ImGui::SliderFloat(TR("Card Rounding", "圆角弧度"), &g_config.osd_rounding, 0.0f, 20.0f, "%.0f px"))
+                config_dirty = true;
+            HelpTip(TR("Corner rounding for modern cards and pill badges.", "现代卡片与徽标的圆角平滑度。"));
+        }
+
         float scale_pct = g_config.osd_scale * 100.0f;
         if (ImGui::SliderFloat(TR("OSD Scale", "缩放比例"), &scale_pct, 50.0f, 200.0f, "%.0f%%"))
             g_config.osd_scale = scale_pct / 100.0f;
@@ -341,6 +374,12 @@ void DrawSettings(reshade::api::effect_runtime* /*rt*/) {
         ImGui::SliderFloat(TR("Text Brightness", "文字亮度"), &g_config.osd_text_brightness, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemDeactivatedAfterEdit()) config_dirty = true;
         HelpTip(TR("Brightness of the OSD text. 1.0 = full white, 0.0 = black.", "OSD 文字亮度。1.0 为纯白，0.0 为纯黑。"));
+
+        if (g_config.osd_show_frametime_graph) {
+            if (ImGui::Checkbox(TR("Target Guideline", "帧时间目标参考线"), &g_config.osd_show_target_line))
+                config_dirty = true;
+            HelpTip(TR("Draw a cyan reference line at the target frame time interval in the graph.", "在帧时间曲线图中绘制当前目标帧率对应的参考基准线，方便快速识别卡顿尖峰。"));
+        }
 
         // ── Presets ──
         ImGui::Spacing();
@@ -1651,6 +1690,801 @@ static inline ParsedKeybind GetCachedKeybind(const std::string& str, std::string
     return cached_kb;
 }
 
+// ── Modern OSD badge & layout helpers ──
+static void DrawBadge(const char* tag, ImU32 bg_col, ImU32 text_col, float scale) {
+    ImVec2 txt_sz = ImGui::CalcTextSize(tag);
+    float pad_x = 5.0f * scale;
+    float pad_y = 1.5f * scale;
+    ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImVec2 p1 = ImVec2(p0.x + txt_sz.x + pad_x * 2.0f, p0.y + txt_sz.y + pad_y * 2.0f);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    float round_r = (std::min)(4.0f * scale, (p1.y - p0.y) * 0.5f);
+    dl->AddRectFilled(p0, p1, bg_col, round_r);
+    dl->AddText(ImVec2(p0.x + pad_x, p0.y + pad_y), text_col, tag);
+    ImGui::SetCursorScreenPos(ImVec2(p1.x + 6.0f * scale, p0.y));
+}
+
+static void DrawDot(float scale) {
+    ImGui::SameLine(0.0f, 4.0f * scale);
+    float b = g_config.osd_text_brightness;
+    ImGui::TextColored(ImVec4(0.45f * b, 0.48f * b, 0.52f * b, 0.75f), "·");
+    ImGui::SameLine(0.0f, 4.0f * scale);
+}
+
+static void DrawBarDivider(float scale) {
+    ImGui::SameLine(0.0f, 8.0f * scale);
+    float b = g_config.osd_text_brightness;
+    ImGui::TextColored(ImVec4(0.4f * b, 0.45f * b, 0.5f * b, 0.6f), "|");
+    ImGui::SameLine(0.0f, 8.0f * scale);
+}
+
+static void DrawModernCardOSD(float scale, double ft_ms) {
+    const HWMonitorData& hw = HWMonitor_GetData();
+    float b = g_config.osd_text_brightness;
+
+    // ── Module 1: FPS & Frametime ──
+    if (g_config.osd_show_fps || g_config.osd_show_frametime || g_config.osd_show_1pct_low || g_config.osd_show_0_1pct_low) {
+        DrawBadge("FPS", IM_COL32(0, 160, 220, 230), IM_COL32(10, 25, 35, 255), scale);
+
+        bool has_first = false;
+        if (g_config.osd_show_fps) {
+            double output = s_display_output_fps;
+            int fg_div_raw = ComputeFGDivisorRaw();
+            char buf[64];
+            if (output > 0.0 && fg_div_raw > 1) {
+                snprintf(buf, sizeof(buf), TR("%.0f fps (%.1f)", "%.0f FPS (%.1f 渲染)"), output, s_display_fps);
+            } else {
+                double show_fps = s_display_fps;
+                if (g_user_target_fps.load(std::memory_order_relaxed) <= 0 && output > 0.0 && std::abs(show_fps - output) > 10.0) {
+                    show_fps = output;
+                }
+                snprintf(buf, sizeof(buf), TR("%.1f fps", "%.1f FPS"), show_fps);
+            }
+            OSDTextColored(ColPerf(), buf);
+            has_first = true;
+        }
+
+        if (g_config.osd_show_frametime) {
+            if (has_first) DrawDot(scale);
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%.2f ms", ft_ms);
+            OSDTextColored(ColPerf(), buf);
+            has_first = true;
+        }
+
+        if (g_config.osd_show_1pct_low && s_cached_1pct_low > 0.0) {
+            if (has_first) DrawDot(scale);
+            char buf[32];
+            snprintf(buf, sizeof(buf), TR("1%% Low: %.0f", "1%%: %.0f"), s_cached_1pct_low);
+            OSDTextColored(ColPerf(), buf);
+            has_first = true;
+        }
+
+        if (g_config.osd_show_0_1pct_low && s_cached_01pct_low > 0.0) {
+            if (has_first) DrawDot(scale);
+            char buf[32];
+            snprintf(buf, sizeof(buf), TR("0.1%% Low: %.0f", "0.1%%: %.0f"), s_cached_01pct_low);
+            OSDTextColored(ColPerf(), buf);
+        }
+    }
+
+    // ── Module 2: Quality & Smoothness (PQI) ──
+    if (g_config.osd_show_pqi || g_config.osd_show_smoothness) {
+        PQIScores pqi = {};
+        if (g_config.osd_show_pqi || g_config.osd_show_pqi_breakdown)
+            pqi = PQI_GetRolling();
+
+        ImU32 pqi_bg = (pqi.pqi >= 90.0) ? IM_COL32(46, 125, 50, 230)
+                     : (pqi.pqi >= 70.0 ? IM_COL32(230, 160, 20, 230) : IM_COL32(198, 40, 40, 230));
+
+        DrawBadge("PQI", pqi_bg, IM_COL32(255, 255, 255, 255), scale);
+
+        bool has_first = false;
+        if (g_config.osd_show_pqi) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%.0f%%", pqi.pqi);
+            OSDTextColored(PQIColor(pqi.pqi / 100.0), buf);
+            has_first = true;
+
+            if (g_config.osd_show_pqi_breakdown) {
+                char bbuf[64];
+                snprintf(bbuf, sizeof(bbuf), TR(" (Cad: %.0f%% · Stut: %.0f%% · Ddl: %.0f%%)",
+                                               " (节奏: %.0f%% · 卡顿: %.0f%% · 准时: %.0f%%)"),
+                         pqi.cadence * 100.0, pqi.stutter * 100.0, pqi.deadline * 100.0);
+                ImGui::SameLine(0.0f, 2.0f * scale);
+                OSDTextColored(ImVec4(0.7f*b, 0.7f*b, 0.7f*b, 1.0f), bbuf);
+            }
+        }
+
+        if (g_config.osd_show_smoothness) {
+            double smooth = g_smoothness_us.load(std::memory_order_relaxed);
+            if (smooth > 0.0) {
+                if (has_first) DrawDot(scale);
+                char buf[32];
+                snprintf(buf, sizeof(buf), TR("Smooth: %.2f ms", "平滑: %.2f ms"), smooth / 1000.0);
+                ImVec4 col = (smooth < 500.0) ? ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f)
+                           : (smooth < 1500.0 ? ImVec4(0.9f*b, 0.9f*b, 0.2f*b, 1.0f) : ImVec4(0.9f*b, 0.2f*b, 0.2f*b, 1.0f));
+                OSDTextColored(col, buf);
+            }
+        }
+    }
+
+    // ── Module 3: GPU (AMD Radeon Crimson) ──
+    bool has_gpu = (g_config.osd_show_gpu_usage && hw.gpu_usage_pct >= 0) ||
+                   (g_config.osd_show_gpu_clock && hw.gpu_clock_mhz >= 0) ||
+                   (g_config.osd_show_gpu_temp && hw.gpu_temp_c >= 0) ||
+                   (g_config.osd_show_gpu_power && hw.gpu_power_w >= 0) ||
+                   (g_config.osd_show_vram && hw.vram_used_mb >= 0);
+
+    if (has_gpu) {
+        DrawBadge("GPU", IM_COL32(230, 57, 70, 230), IM_COL32(255, 255, 255, 255), scale);
+
+        bool has_first = false;
+        if (g_config.osd_show_gpu_usage && hw.gpu_usage_pct >= 0) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%d%%", hw.gpu_usage_pct);
+            OSDTextColored(ColSystem(), buf);
+            has_first = true;
+        }
+
+        if (g_config.osd_show_gpu_clock && hw.gpu_clock_mhz >= 0) {
+            if (has_first) DrawDot(scale);
+            char buf[48];
+            if (hw.gpu_mem_clock_mhz >= 0)
+                snprintf(buf, sizeof(buf), "%d / %d MHz", hw.gpu_clock_mhz, hw.gpu_mem_clock_mhz);
+            else
+                snprintf(buf, sizeof(buf), "%d MHz", hw.gpu_clock_mhz);
+            OSDTextColored(ColSystem(), buf);
+            has_first = true;
+        }
+
+        if (g_config.osd_show_gpu_temp && hw.gpu_temp_c >= 0) {
+            if (has_first) DrawDot(scale);
+            char buf[64];
+            if (hw.gpu_temp_hotspot_c >= 0)
+                snprintf(buf, sizeof(buf), "%d°C (Hot %d°C)", hw.gpu_temp_c, hw.gpu_temp_hotspot_c);
+            else
+                snprintf(buf, sizeof(buf), "%d°C", hw.gpu_temp_c);
+            int max_temp = (std::max)(hw.gpu_temp_c, hw.gpu_temp_hotspot_c);
+            ImVec4 col = (max_temp < 75) ? ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f)
+                       : (max_temp < 90 ? ImVec4(0.9f*b, 0.9f*b, 0.2f*b, 1.0f) : ImVec4(0.9f*b, 0.2f*b, 0.2f*b, 1.0f));
+            OSDTextColored(col, buf);
+            has_first = true;
+        }
+
+        if (g_config.osd_show_gpu_power && hw.gpu_power_w >= 0) {
+            if (has_first) DrawDot(scale);
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%d W", hw.gpu_power_w);
+            OSDTextColored(ColSystem(), buf);
+            has_first = true;
+        }
+
+        if (g_config.osd_show_vram && hw.vram_used_mb >= 0 && hw.vram_total_mb > 0) {
+            if (has_first) DrawDot(scale);
+            char buf[48];
+            snprintf(buf, sizeof(buf), TR("VRAM: %.1f / %.1f GB", "显存: %.1f / %.1f GB"),
+                     hw.vram_used_mb / 1024.0, hw.vram_total_mb / 1024.0);
+            float usage = static_cast<float>(hw.vram_used_mb) / static_cast<float>(hw.vram_total_mb);
+            ImVec4 col = (usage > 0.90f) ? ImVec4(1.0f*b, 0.3f*b, 0.3f*b, 1.0f)
+                       : (usage > 0.75f ? ImVec4(1.0f*b, 0.85f*b, 0.0f*b, 1.0f) : ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f));
+            OSDTextColored(col, buf);
+        }
+    }
+
+    // ── Module 4: CPU (Electric Blue) ──
+    bool has_cpu = (g_config.osd_show_cpu_usage && hw.cpu_usage_pct >= 0) ||
+                   (g_config.osd_show_cpu_clock && hw.cpu_clock_mhz > 0) ||
+                   (g_config.osd_show_cpu_power && hw.cpu_power_w > 0) ||
+                   (g_config.osd_show_ram && hw.ram_used_mb >= 0);
+
+    if (has_cpu) {
+        DrawBadge("CPU", IM_COL32(33, 140, 250, 230), IM_COL32(255, 255, 255, 255), scale);
+
+        bool has_first = false;
+        if (g_config.osd_show_cpu_usage && hw.cpu_usage_pct >= 0) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%d%%", hw.cpu_usage_pct);
+            OSDTextColored(ColSystem(), buf);
+            has_first = true;
+        }
+
+        if (g_config.osd_show_cpu_clock && hw.cpu_clock_mhz > 0) {
+            if (has_first) DrawDot(scale);
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%d MHz", hw.cpu_clock_mhz);
+            OSDTextColored(ColSystem(), buf);
+            has_first = true;
+        }
+
+        if (g_config.osd_show_cpu_power && hw.cpu_power_w > 0) {
+            if (has_first) DrawDot(scale);
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%d W", hw.cpu_power_w);
+            OSDTextColored(ColSystem(), buf);
+            has_first = true;
+        }
+
+        if (g_config.osd_show_ram && hw.ram_used_mb >= 0 && hw.ram_total_mb > 0) {
+            if (has_first) DrawDot(scale);
+            char buf[48];
+            snprintf(buf, sizeof(buf), TR("RAM: %.1f / %.1f GB", "内存: %.1f / %.1f GB"),
+                     hw.ram_used_mb / 1024.0, hw.ram_total_mb / 1024.0);
+            OSDTextColored(ColSystem(), buf);
+        }
+    }
+
+    // ── Module 5: Latency & Bottleneck (Warm Amber) ──
+#ifdef _WIN64
+    double cpu_lat_us = g_config.osd_show_cpu_latency ? g_cpu_latency_us.load(std::memory_order_relaxed) : 0.0;
+    double gpu_lat_us = 0.0;
+    if (g_config.osd_show_gpu_render_time) {
+        gpu_lat_us = g_telemetry_gpu_work_us.load(std::memory_order_relaxed);
+        if (gpu_lat_us <= 0.0) gpu_lat_us = g_reflex_gpu_active_us.load(std::memory_order_relaxed);
+        if (gpu_lat_us <= 0.0) gpu_lat_us = g_gpu_timer.GetLatestGpuTimeUs();
+        if (gpu_lat_us <= 0.0) gpu_lat_us = g_measured_render_time_us.load(std::memory_order_relaxed);
+    }
+    double total_cost_us = g_config.osd_show_total_frame_cost ? g_reflex_total_frame_cost_us.load(std::memory_order_relaxed) : 0.0;
+
+    bool has_lat = (cpu_lat_us > 0.0) || (gpu_lat_us > 0.0) || (total_cost_us > 0.0) || g_config.osd_show_bottleneck;
+
+    if (has_lat) {
+        DrawBadge("LAT", IM_COL32(245, 140, 0, 230), IM_COL32(255, 255, 255, 255), scale);
+
+        bool has_first = false;
+        if (gpu_lat_us > 0.0) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), TR("GPU: %.1f ms", "显卡: %.1f ms"), gpu_lat_us / 1000.0);
+            OSDTextColored(ColLatency(), buf);
+            has_first = true;
+        }
+
+        if (cpu_lat_us > 0.0) {
+            if (has_first) DrawDot(scale);
+            char buf[32];
+            snprintf(buf, sizeof(buf), TR("CPU: %.1f ms", "CPU: %.1f ms"), cpu_lat_us / 1000.0);
+            OSDTextColored(ColLatency(), buf);
+            has_first = true;
+        }
+
+        if (total_cost_us > 0.0) {
+            if (has_first) DrawDot(scale);
+            char buf[32];
+            snprintf(buf, sizeof(buf), TR("Frame: %.1f ms", "整帧: %.1f ms"), total_cost_us / 1000.0);
+            OSDTextColored(ColLatency(), buf);
+            has_first = true;
+        }
+
+        if (g_config.osd_show_bottleneck) {
+            if (has_first) DrawDot(scale);
+            BottleneckKind bkind = g_bottleneck_kind.load(std::memory_order_relaxed);
+            const char* bstr = (bkind == BottleneckKind::GpuBound) ? TR("GPU Bound", "显卡受限")
+                             : ((bkind == BottleneckKind::CpuBound) ? TR("CPU Bound", "处理器受限") : TR("Balanced", "负载平衡"));
+            ImU32 bcol = (bkind == BottleneckKind::GpuBound) ? IM_COL32(230, 81, 0, 220)
+                       : ((bkind == BottleneckKind::CpuBound) ? IM_COL32(2, 119, 189, 220) : IM_COL32(110, 110, 110, 200));
+            DrawBadge(bstr, bcol, IM_COL32(255, 255, 255, 255), scale);
+        }
+    }
+
+    // ── Module 6: Pipeline (Frame Gen / Limiter / Adaptive) ──
+    int fg_div_raw = ComputeFGDivisorRaw();
+    bool show_fg_active = g_config.osd_show_fg && fg_div_raw > 1;
+    bool has_pipe = show_fg_active || g_config.osd_show_limiter || (g_config.osd_show_adaptive_smoothing && g_config.adaptive_smoothing);
+
+    if (has_pipe) {
+        DrawBadge("PIPE", IM_COL32(106, 27, 154, 230), IM_COL32(255, 255, 255, 255), scale);
+
+        bool has_first = false;
+        if (show_fg_active) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "FG %dx", fg_div_raw);
+            OSDTextColored(ColPipeline(), buf);
+            has_first = true;
+        }
+
+        if (g_config.osd_show_limiter) {
+            if (has_first) DrawDot(scale);
+            int tier = static_cast<int>(g_current_tier);
+            double added_ms = g_last_gate_sleep_us.load(std::memory_order_relaxed) / 1000.0;
+            char buf[48];
+            snprintf(buf, sizeof(buf), TR("Limiter: +%.1f ms (T%d)", "限帧: +%.1f ms (T%d)"), added_ms, tier);
+            OSDTextColored(ColPipeline(), buf);
+            has_first = true;
+        }
+
+        if (g_config.osd_show_adaptive_smoothing && g_config.adaptive_smoothing && g_adaptive_smoothing.IsWarm()) {
+            if (has_first) DrawDot(scale);
+            double offset = g_smoothing_offset_us.load(std::memory_order_relaxed);
+            char buf[48];
+            snprintf(buf, sizeof(buf), TR("Adaptive: +%.0f us", "平滑: +%.0f us"), offset);
+            OSDTextColored(ColPipeline(), buf);
+        }
+    }
+#endif
+
+    // ── Module 7: Display & API ──
+    if (g_config.osd_show_api || g_config.osd_show_resolution || g_config.osd_show_flip_model) {
+        DrawBadge("API", IM_COL32(100, 115, 130, 230), IM_COL32(255, 255, 255, 255), scale);
+
+        bool has_first = false;
+        if (g_config.osd_show_api) {
+            ActiveAPI api = SwapMgr_GetActiveAPI();
+            const char* api_name = (api == ActiveAPI::DX12) ? "DX12" : (api == ActiveAPI::DX11 ? "DX11" : (api == ActiveAPI::Vulkan ? "Vulkan" : (api == ActiveAPI::OpenGL ? "OpenGL" : "None")));
+            const char* arch = (sizeof(void*) == 8) ? "64-bit" : "32-bit";
+            char buf[48];
+            snprintf(buf, sizeof(buf), "%s %s", api_name, arch);
+            OSDTextColored(ColPipeline(), buf);
+            has_first = true;
+        }
+
+        if (g_config.osd_show_resolution) {
+            uint32_t rw = 0, rh = 0;
+            SwapMgr_GetResolution(rw, rh);
+            if (rw > 0 && rh > 0) {
+                if (has_first) DrawDot(scale);
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%ux%u", rw, rh);
+                OSDTextColored(ColPipeline(), buf);
+                has_first = true;
+            }
+        }
+
+        if (g_config.osd_show_flip_model) {
+            if (has_first) DrawDot(scale);
+            OSDTextColored(ColPipeline(), SwapMgr_GetPresentationModelString());
+        }
+    }
+
+    // ── Module 8: Status (REC / Baseline) ──
+    if (CSV_IsEnabled()) {
+        DrawBadge("REC", IM_COL32(211, 47, 47, 240), IM_COL32(255, 255, 255, 255), scale);
+        OSDTextColored(ColStatus(), TR("Recording", "录制中"));
+    }
+    if (Baseline_IsCapturing() || Baseline_IsComparison()) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.0f%%", Baseline_GetProgress() * 100.0);
+        DrawBadge("BASE", IM_COL32(255, 111, 0, 240), IM_COL32(255, 255, 255, 255), scale);
+        OSDTextColored(ColStatus(), buf);
+    }
+}
+
+static void DrawModernBarOSD(float scale, double ft_ms) {
+    const HWMonitorData& hw = HWMonitor_GetData();
+    bool has_prev = false;
+
+    // Module 1: FPS
+    if (g_config.osd_show_fps) {
+        DrawBadge("FPS", IM_COL32(0, 160, 220, 230), IM_COL32(10, 25, 35, 255), scale);
+        double output = s_display_output_fps;
+        int fg_div_raw = ComputeFGDivisorRaw();
+        char buf[64];
+        if (output > 0.0 && fg_div_raw > 1) {
+            snprintf(buf, sizeof(buf), "%.0f (%.1f)", output, s_display_fps);
+        } else {
+            snprintf(buf, sizeof(buf), "%.1f", (output > 0.0 && g_user_target_fps.load(std::memory_order_relaxed) <= 0) ? output : s_display_fps);
+        }
+        OSDTextColored(ColPerf(), buf);
+
+        if (g_config.osd_show_frametime) {
+            DrawDot(scale);
+            char ft_buf[24];
+            snprintf(ft_buf, sizeof(ft_buf), "%.1fms", ft_ms);
+            OSDTextColored(ColPerf(), ft_buf);
+        }
+        if (g_config.osd_show_1pct_low && s_cached_1pct_low > 0.0) {
+            DrawDot(scale);
+            char l_buf[24];
+            snprintf(l_buf, sizeof(l_buf), "1%% %.0f", s_cached_1pct_low);
+            OSDTextColored(ColPerf(), l_buf);
+        }
+        has_prev = true;
+    }
+
+    // Module 2: GPU
+    if ((g_config.osd_show_gpu_usage && hw.gpu_usage_pct >= 0) || (g_config.osd_show_gpu_temp && hw.gpu_temp_c >= 0)) {
+        if (has_prev) DrawBarDivider(scale);
+        DrawBadge("GPU", IM_COL32(230, 57, 70, 230), IM_COL32(255, 255, 255, 255), scale);
+        char gbuf[64];
+        if (hw.gpu_usage_pct >= 0 && hw.gpu_temp_c >= 0) {
+            snprintf(gbuf, sizeof(gbuf), "%d%% · %d°C", hw.gpu_usage_pct, hw.gpu_temp_c);
+        } else if (hw.gpu_usage_pct >= 0) {
+            snprintf(gbuf, sizeof(gbuf), "%d%%", hw.gpu_usage_pct);
+        } else {
+            snprintf(gbuf, sizeof(gbuf), "%d°C", hw.gpu_temp_c);
+        }
+        OSDTextColored(ColSystem(), gbuf);
+        if (g_config.osd_show_gpu_power && hw.gpu_power_w > 0) {
+            DrawDot(scale);
+            char p_buf[16];
+            snprintf(p_buf, sizeof(p_buf), "%dW", hw.gpu_power_w);
+            OSDTextColored(ColSystem(), p_buf);
+        }
+        has_prev = true;
+    }
+
+    // Module 3: CPU
+    if ((g_config.osd_show_cpu_usage && hw.cpu_usage_pct >= 0) || (g_config.osd_show_cpu_clock && hw.cpu_clock_mhz > 0)) {
+        if (has_prev) DrawBarDivider(scale);
+        DrawBadge("CPU", IM_COL32(33, 140, 250, 230), IM_COL32(255, 255, 255, 255), scale);
+        char cbuf[64];
+        if (hw.cpu_usage_pct >= 0 && hw.cpu_clock_mhz > 0) {
+            snprintf(cbuf, sizeof(cbuf), "%d%% · %.1fG", hw.cpu_usage_pct, hw.cpu_clock_mhz / 1000.0);
+        } else if (hw.cpu_usage_pct >= 0) {
+            snprintf(cbuf, sizeof(cbuf), "%d%%", hw.cpu_usage_pct);
+        } else {
+            snprintf(cbuf, sizeof(cbuf), "%d MHz", hw.cpu_clock_mhz);
+        }
+        OSDTextColored(ColSystem(), cbuf);
+        if (g_config.osd_show_cpu_power && hw.cpu_power_w > 0) {
+            DrawDot(scale);
+            char cp_buf[16];
+            snprintf(cp_buf, sizeof(cp_buf), "%dW", hw.cpu_power_w);
+            OSDTextColored(ColSystem(), cp_buf);
+        }
+        has_prev = true;
+    }
+
+    // Module 4: RAM
+    if (g_config.osd_show_ram && hw.ram_used_mb >= 0) {
+        if (has_prev) DrawBarDivider(scale);
+        char rbuf[32];
+        snprintf(rbuf, sizeof(rbuf), "RAM %.1fG", hw.ram_used_mb / 1024.0);
+        OSDTextColored(ColSystem(), rbuf);
+        has_prev = true;
+    }
+
+    // Module 5: PQI
+    if (g_config.osd_show_pqi) {
+        if (has_prev) DrawBarDivider(scale);
+        PQIScores pqi = PQI_GetRolling();
+        char pbuf[24];
+        snprintf(pbuf, sizeof(pbuf), "PQI %.0f%%", pqi.pqi);
+        OSDTextColored(PQIColor(pqi.pqi / 100.0), pbuf);
+        has_prev = true;
+    }
+
+    // Module 6: Bottleneck
+    if (g_config.osd_show_bottleneck) {
+        if (has_prev) DrawBarDivider(scale);
+        BottleneckKind bkind = g_bottleneck_kind.load(std::memory_order_relaxed);
+        const char* bstr = (bkind == BottleneckKind::GpuBound) ? "GPU"
+                         : ((bkind == BottleneckKind::CpuBound) ? "CPU" : "OK");
+        ImU32 bcol = (bkind == BottleneckKind::GpuBound) ? IM_COL32(230, 81, 0, 220)
+                   : ((bkind == BottleneckKind::CpuBound) ? IM_COL32(2, 119, 189, 220) : IM_COL32(110, 110, 110, 200));
+        DrawBadge(bstr, bcol, IM_COL32(255, 255, 255, 255), scale);
+    }
+}
+
+static void DrawClassicOSD(float scale, double ft_ms) {
+    // ═══════════════════════════════════
+    // PERFORMANCE (cyan)
+    // ═══════════════════════════════════
+    if (g_config.osd_show_fps) {
+        double output = s_display_output_fps;
+        int fg_div_raw = ComputeFGDivisorRaw();
+        char buf[64];
+        if (output > 0.0 && fg_div_raw > 1) {
+            snprintf(buf, sizeof(buf), TR("%.0f fps (%.1f render)", "%.0f FPS (%.1f 渲染)"), output, s_display_fps);
+        } else {
+            double show_fps = s_display_fps;
+            if (g_user_target_fps.load(std::memory_order_relaxed) <= 0 && output > 0.0 && std::abs(show_fps - output) > 10.0) {
+                show_fps = output;
+            }
+            snprintf(buf, sizeof(buf), TR("%.1f fps", "%.1f FPS"), show_fps);
+        }
+        OSDTextColored(ColPerf(), buf);
+    }
+
+    if (g_config.osd_show_1pct_low) {
+        if (s_cached_1pct_low > 0.0) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), TR("1%% Low: %.0f", "1%% 低帧: %.0f"), s_cached_1pct_low);
+            OSDTextColored(ColPerf(), buf);
+        }
+    }
+
+    if (g_config.osd_show_0_1pct_low) {
+        if (s_cached_01pct_low > 0.0) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), TR("0.1%% Low: %.0f", "0.1%% 低帧: %.0f"), s_cached_01pct_low);
+            OSDTextColored(ColPerf(), buf);
+        }
+    }
+
+    if (g_config.osd_show_frametime) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.2f ms", ft_ms);
+        OSDTextColored(ColPerf(), buf);
+    }
+
+    // ═══════════════════════════════════
+    // LATENCY (orange)
+    // ═══════════════════════════════════
+    if (g_config.osd_show_cpu_latency) {
+        double cpu_us = g_cpu_latency_us.load(std::memory_order_relaxed);
+        if (cpu_us > 0.0) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), TR("CPU: %.1f ms", "CPU 提交: %.1f ms"), cpu_us / 1000.0);
+            OSDTextColored(ColLatency(), buf);
+        }
+    }
+
+    if (g_config.osd_show_gpu_render_time) {
+        double gpu_us = g_telemetry_gpu_work_us.load(std::memory_order_relaxed);
+        if (gpu_us <= 0.0) {
+            gpu_us = g_reflex_gpu_active_us.load(std::memory_order_relaxed);
+            if (gpu_us <= 0.0)
+                gpu_us = g_gpu_timer.GetLatestGpuTimeUs();
+            if (gpu_us <= 0.0)
+                gpu_us = g_measured_render_time_us.load(std::memory_order_relaxed);
+        }
+        if (gpu_us > 0.0) {
+            const char* tag = "HW";
+            if (g_reflex_gpu_active_us.load(std::memory_order_relaxed) > 0.0)
+                tag = "Reflex";
+            else if (g_gpu_timer.IsSupported())
+                tag = g_gpu_timer.GetSourceTag();
+
+            char buf[64];
+            snprintf(buf, sizeof(buf), TR("GPU (HW): %.1f ms [%s]", "显卡耗时 (HW): %.1f ms [%s]"),
+                     gpu_us / 1000.0, tag);
+            OSDTextColored(ColLatency(), buf);
+        }
+    }
+
+    if (g_config.osd_show_total_frame_cost) {
+        double cost_us = g_reflex_total_frame_cost_us.load(std::memory_order_relaxed);
+        if (cost_us > 0.0) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), TR("Frame: %.1f ms", "整帧耗时: %.1f ms"), cost_us / 1000.0);
+            OSDTextColored(ColLatency(), buf);
+        }
+    }
+
+    // ═══════════════════════════════════
+    // QUALITY (green/yellow/red)
+    // ═══════════════════════════════════
+    PQIScores pqi = {};
+    if (g_config.osd_show_pqi || g_config.osd_show_pqi_breakdown)
+        pqi = PQI_GetRolling();
+
+    if (g_config.osd_show_pqi) {
+        ImVec4 pqi_color = PQIColor(pqi.pqi / 100.0);
+        char buf[32];
+        snprintf(buf, sizeof(buf), TR("PQI: %.0f%%", "PQI 评分: %.0f%%"), pqi.pqi);
+        OSDTextColored(pqi_color, buf);
+    }
+
+    if (g_config.osd_show_pqi && g_config.osd_show_pqi_breakdown) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), TR(" Cadence: %.0f%%", " 节奏稳态: %.0f%%"), pqi.cadence * 100.0);
+        OSDTextColored(PQIColor(pqi.cadence), buf);
+        snprintf(buf, sizeof(buf), TR(" Stutter: %.0f%%", " 卡顿抑制: %.0f%%"), pqi.stutter * 100.0);
+        OSDTextColored(PQIColor(pqi.stutter), buf);
+        snprintf(buf, sizeof(buf), TR(" Deadline: %.0f%%", " 准时达成: %.0f%%"), pqi.deadline * 100.0);
+        OSDTextColored(PQIColor(pqi.deadline), buf);
+    }
+
+    if (g_config.osd_show_smoothness) {
+        double smooth = g_smoothness_us.load(std::memory_order_relaxed);
+        if (smooth > 0.0) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), TR("Smoothness: %.2f ms", "平滑度: %.2f ms"), smooth / 1000.0);
+            ImVec4 col;
+            float b = g_config.osd_text_brightness;
+            if (smooth < 500.0)       col = ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f);
+            else if (smooth < 1500.0) col = ImVec4(0.9f*b, 0.9f*b, 0.2f*b, 1.0f);
+            else                      col = ImVec4(0.9f*b, 0.2f*b, 0.2f*b, 1.0f);
+            OSDTextColored(col, buf);
+        }
+    }
+
+    // ═══════════════════════════════════
+    // PIPELINE (light blue)
+    // ═══════════════════════════════════
+#ifdef _WIN64
+    int tier = static_cast<int>(g_current_tier);
+    double limiter_added_ms = g_last_gate_sleep_us.load(std::memory_order_relaxed) / 1000.0;
+    int fg_div_raw = ComputeFGDivisorRaw();
+    if (g_config.osd_show_fg && fg_div_raw > 1) {
+        char buf[48];
+        snprintf(buf, sizeof(buf), TR("FG: %dx", "插帧: %dx"), fg_div_raw);
+        OSDTextColored(ColPipeline(), buf);
+    }
+
+    if (g_config.osd_show_limiter) {
+        char buf[48];
+        snprintf(buf, sizeof(buf), TR("Limiter: +%.1f ms  T%d", "限帧延迟: +%.1f ms  T%d"), limiter_added_ms, tier);
+        OSDTextColored(ColPipeline(), buf);
+    }
+
+    if (g_config.osd_show_adaptive_smoothing && g_config.adaptive_smoothing) {
+        double offset = g_smoothing_offset_us.load(std::memory_order_relaxed);
+        double p99 = g_smoothing_p99_us.load(std::memory_order_relaxed);
+        if (g_adaptive_smoothing.IsWarm()) {
+            const char* mode = g_adaptive_smoothing.dual_mode ? TR("Dual", "双重") : TR("Med", "中位");
+            double pct = g_adaptive_smoothing.target_percentile * 100.0;
+            char buf[96];
+            snprintf(buf, sizeof(buf), TR("Adaptive: +%.0f us (P%.0f: %.1f ms) [%s]",
+                                         "自适应平滑: +%.0f us (P%.0f: %.1f ms) [%s]"),
+                     offset, pct, p99 / 1000.0, mode);
+            float b = g_config.osd_text_brightness;
+            ImVec4 col = (offset < 100.0)
+                ? ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f)
+                : ImVec4(0.9f*b, 0.9f*b, 0.2f*b, 1.0f);
+            OSDTextColored(col, buf);
+        }
+    }
+
+    // Bottleneck state (GPU Bound / CPU Bound)
+    if (g_config.osd_show_bottleneck) {
+        BottleneckKind bkind = g_bottleneck_kind.load(std::memory_order_relaxed);
+        const char* bstr = (bkind == BottleneckKind::GpuBound)
+            ? TR("GPU Bound", "显卡受限 (GPU)")
+            : ((bkind == BottleneckKind::CpuBound)
+                ? TR("CPU Bound", "处理器受限 (CPU)")
+                : TR("Balanced", "负载平衡"));
+        char buf[64];
+        snprintf(buf, sizeof(buf), TR("Bottleneck: %s", "硬件瓶颈: %s"), bstr);
+        float b = g_config.osd_text_brightness;
+        ImVec4 bcol = (bkind == BottleneckKind::GpuBound)
+            ? ImVec4(0.95f*b, 0.45f*b, 0.2f*b, 1.0f)
+            : ((bkind == BottleneckKind::CpuBound)
+                ? ImVec4(0.3f*b, 0.75f*b, 1.0f*b, 1.0f)
+                : ImVec4(0.7f*b, 0.7f*b, 0.7f*b, 1.0f));
+        OSDTextColored(bcol, buf);
+    }
+
+    if (g_config.osd_show_cpu_work) {
+        double cpu_us = g_telemetry_cpu_work_us.load(std::memory_order_relaxed);
+        char buf[48];
+        snprintf(buf, sizeof(buf), TR("CPU Work: %.1f ms", "CPU 真实耗时: %.1f ms"), cpu_us / 1000.0);
+        OSDTextColored(ColLatency(), buf);
+    }
+#endif
+
+    // ═══════════════════════════════════
+    // DISPLAY & API (light blue)
+    // ═══════════════════════════════════
+    if (g_config.osd_show_api) {
+        ActiveAPI api = SwapMgr_GetActiveAPI();
+        const char* api_name = "None";
+        if (api == ActiveAPI::DX12) api_name = "DX12";
+        else if (api == ActiveAPI::DX11) api_name = "DX11";
+        else if (api == ActiveAPI::DX9) api_name = "DX9";
+        else if (api == ActiveAPI::Vulkan) api_name = "Vulkan";
+        else if (api == ActiveAPI::OpenGL) api_name = "OpenGL";
+
+        const char* arch = (sizeof(void*) == 8) ? "64-bit" : "32-bit";
+        char buf[64];
+        snprintf(buf, sizeof(buf), TR("API: %s (%s)", "接口: %s (%s)"), api_name, arch);
+        OSDTextColored(ColPipeline(), buf);
+    }
+
+    if (g_config.osd_show_resolution) {
+        uint32_t rw = 0, rh = 0;
+        SwapMgr_GetResolution(rw, rh);
+        char buf[64];
+        if (rw > 0 && rh > 0) {
+            snprintf(buf, sizeof(buf), TR("Res: %ux%u", "分辨率: %ux%u"), rw, rh);
+        } else {
+            snprintf(buf, sizeof(buf), TR("Res: N/A", "分辨率: 未知"));
+        }
+        OSDTextColored(ColPipeline(), buf);
+    }
+
+    if (g_config.osd_show_flip_model) {
+        const char* flip_str = SwapMgr_GetPresentationModelString();
+        char buf[128];
+        snprintf(buf, sizeof(buf), TR("Flip Model: %s", "翻转模式: %s"), flip_str);
+        OSDTextColored(ColPipeline(), buf);
+    }
+
+    // ═══════════════════════════════════
+    // SYSTEM (grey — hardware sensors)
+    // ═══════════════════════════════════
+    {
+        const HWMonitorData& hw = HWMonitor_GetData();
+
+        if (g_config.osd_show_gpu_temp && hw.gpu_temp_c >= 0) {
+            char buf[96];
+            if (hw.gpu_temp_hotspot_c >= 0 && hw.gpu_temp_mem_c >= 0) {
+                snprintf(buf, sizeof(buf), TR("GPU: %d C (Hot: %d C, VRAM: %d C)",
+                                             "显卡温度: %d C (热点: %d C, 显存: %d C)"),
+                         hw.gpu_temp_c, hw.gpu_temp_hotspot_c, hw.gpu_temp_mem_c);
+            } else if (hw.gpu_temp_hotspot_c >= 0) {
+                snprintf(buf, sizeof(buf), TR("GPU: %d C (Hot: %d C)",
+                                             "显卡温度: %d C (热点: %d C)"),
+                         hw.gpu_temp_c, hw.gpu_temp_hotspot_c);
+            } else {
+                snprintf(buf, sizeof(buf), TR("GPU Temp: %d C", "显卡温度: %d C"), hw.gpu_temp_c);
+            }
+            int max_temp = (std::max)(hw.gpu_temp_c, hw.gpu_temp_hotspot_c);
+            ImVec4 col;
+            float b = g_config.osd_text_brightness;
+            if (max_temp < 75)       col = ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f);
+            else if (max_temp < 90)  col = ImVec4(0.9f*b, 0.9f*b, 0.2f*b, 1.0f);
+            else                     col = ImVec4(0.9f*b, 0.2f*b, 0.2f*b, 1.0f);
+            OSDTextColored(col, buf);
+        }
+
+        if (g_config.osd_show_gpu_clock && hw.gpu_clock_mhz >= 0) {
+            char buf[48];
+            if (hw.gpu_mem_clock_mhz >= 0)
+                snprintf(buf, sizeof(buf), TR("GPU Clock: %d / %d MHz", "显卡频率: %d / %d MHz"), hw.gpu_clock_mhz, hw.gpu_mem_clock_mhz);
+            else
+                snprintf(buf, sizeof(buf), TR("GPU Clock: %d MHz", "显卡频率: %d MHz"), hw.gpu_clock_mhz);
+            OSDTextColored(ColSystem(), buf);
+        }
+
+        if (g_config.osd_show_gpu_usage && hw.gpu_usage_pct >= 0) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), TR("GPU Load: %d%%", "显卡占用: %d%%"), hw.gpu_usage_pct);
+            OSDTextColored(ColSystem(), buf);
+        }
+
+        if (g_config.osd_show_gpu_power && hw.gpu_power_w >= 0) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), TR("GPU Power: %dW", "显卡功耗: %dW"), hw.gpu_power_w);
+            OSDTextColored(ColSystem(), buf);
+        }
+
+        if (g_config.osd_show_vram && hw.vram_used_mb >= 0 && hw.vram_total_mb > 0) {
+            char buf[48];
+            snprintf(buf, sizeof(buf), TR("VRAM: %lld / %lld MB", "显存占用: %lld / %lld MB"),
+                     (long long)hw.vram_used_mb, (long long)hw.vram_total_mb);
+            float usage = static_cast<float>(hw.vram_used_mb) / static_cast<float>(hw.vram_total_mb);
+            float b = g_config.osd_text_brightness;
+            ImVec4 col;
+            if (usage > 0.90f)
+                col = ImVec4(1.0f*b, 0.3f*b, 0.3f*b, 1.0f);
+            else if (usage > 0.75f)
+                col = ImVec4(1.0f*b, 0.85f*b, 0.0f*b, 1.0f);
+            else
+                col = ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f);
+            OSDTextColored(col, buf);
+        }
+
+        if (g_config.osd_show_cpu_usage && hw.cpu_usage_pct >= 0) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), TR("CPU Load: %d%%", "CPU 占用: %d%%"), hw.cpu_usage_pct);
+            OSDTextColored(ColSystem(), buf);
+        }
+
+        if (g_config.osd_show_cpu_clock && hw.cpu_clock_mhz > 0) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), TR("CPU Clock: %d MHz", "CPU 频率: %d MHz"), hw.cpu_clock_mhz);
+            OSDTextColored(ColSystem(), buf);
+        }
+
+        if (g_config.osd_show_cpu_power && hw.cpu_power_w > 0) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), TR("CPU Power: %d W", "CPU 功耗: %d W"), hw.cpu_power_w);
+            OSDTextColored(ColSystem(), buf);
+        }
+
+        if (g_config.osd_show_ram && hw.ram_used_mb >= 0 && hw.ram_total_mb > 0) {
+            char buf[48];
+            snprintf(buf, sizeof(buf), TR("RAM: %.1f / %.1f GB", "内存占用: %.1f / %.1f GB"),
+                     hw.ram_used_mb / 1024.0, hw.ram_total_mb / 1024.0);
+            OSDTextColored(ColSystem(), buf);
+        }
+    }
+
+    if (CSV_IsEnabled())
+        OSDTextColored(ColStatus(), TR("REC", "录制中"));
+
+    if (Baseline_IsCapturing()) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), TR("Baseline: %.0f%%", "基准记录: %.0f%%"), Baseline_GetProgress() * 100.0);
+        OSDTextColored(ColStatus(), buf);
+    } else if (Baseline_IsComparison()) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), TR("Compare: %.0f%%", "基准对比: %.0f%%"), Baseline_GetProgress() * 100.0);
+        OSDTextColored(ColStatus(), buf);
+    }
+}
+
 void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
     // ── Keybind polling (runs every frame via reshade_overlay event) ──
     // Uses GetAsyncKeyState for the main key (works regardless of UI state)
@@ -1894,10 +2728,6 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
     }
 
     // Throttle FPS display update to 2x per second for readability
-    static double s_display_fps = 0.0;
-    static double s_display_render_fps = 0.0;
-    static double s_display_output_fps = 0.0;
-    static ULONGLONG s_fps_display_tick = 0;
     {
         ULONGLONG now = GetTickCount64();
         if (now - s_fps_display_tick >= 500) {
@@ -1928,6 +2758,15 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
             px_x = (std::max)(MARGIN, display.x - s_last_osd_size.x - MARGIN);
         }
     }
+
+    bool is_modern = (g_config.osd_style == "card" || g_config.osd_style == "bar");
+    float rounding = is_modern ? (g_config.osd_rounding * g_config.osd_scale) : 0.0f;
+    float border_sz = is_modern ? 1.0f : 0.0f;
+    ImVec2 padding = is_modern ? ImVec2(10.0f * g_config.osd_scale, 8.0f * g_config.osd_scale) : ImVec2(8.0f * g_config.osd_scale, 6.0f * g_config.osd_scale);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, rounding);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, border_sz);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, padding);
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.35f, 0.45f, 0.55f, 0.45f));
 
     ImGui::SetNextWindowPos({px_x, px_y}, ImGuiCond_Always, {pivot_x, pivot_y});
     ImGui::SetNextWindowBgAlpha(g_config.osd_opacity);
@@ -1963,345 +2802,13 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
             RecomputeLowFPS();
         }
 
-        // ═══════════════════════════════════
-        // PERFORMANCE (cyan)
-        // ═══════════════════════════════════
-        if (g_config.osd_show_fps) {
-            double output = s_display_output_fps;
-            int fg_div_raw = ComputeFGDivisorRaw();
-            char buf[64];
-            if (output > 0.0 && fg_div_raw > 1) {
-                snprintf(buf, sizeof(buf), TR("%.0f fps (%.1f render)", "%.0f FPS (%.1f 渲染)"), output, s_display_fps);
-            } else {
-                double show_fps = s_display_fps;
-                if (g_user_target_fps.load(std::memory_order_relaxed) <= 0 && output > 0.0 && std::abs(show_fps - output) > 10.0) {
-                    show_fps = output;
-                }
-                snprintf(buf, sizeof(buf), TR("%.1f fps", "%.1f FPS"), show_fps);
-            }
-            OSDTextColored(ColPerf(), buf);
-        }
-
-        if (g_config.osd_show_1pct_low) {
-            if (s_cached_1pct_low > 0.0) {
-                char buf[32];
-                snprintf(buf, sizeof(buf), TR("1%% Low: %.0f", "1%% 低帧: %.0f"), s_cached_1pct_low);
-                OSDTextColored(ColPerf(), buf);
-            }
-        }
-
-        if (g_config.osd_show_0_1pct_low) {
-            if (s_cached_01pct_low > 0.0) {
-                char buf[32];
-                snprintf(buf, sizeof(buf), TR("0.1%% Low: %.0f", "0.1%% 低帧: %.0f"), s_cached_01pct_low);
-                OSDTextColored(ColPerf(), buf);
-            }
-        }
-
-        if (g_config.osd_show_frametime) {
-            char buf[32];
-            snprintf(buf, sizeof(buf), "%.2f ms", ft_ms);
-            OSDTextColored(ColPerf(), buf);
-        }
-
-        // ═══════════════════════════════════
-        // LATENCY (orange)
-        // ═══════════════════════════════════
-        if (g_config.osd_show_cpu_latency) {
-            double cpu_us = g_cpu_latency_us.load(std::memory_order_relaxed);
-            if (cpu_us > 0.0) {
-                char buf[32];
-                snprintf(buf, sizeof(buf), TR("CPU: %.1f ms", "CPU 提交: %.1f ms"), cpu_us / 1000.0);
-                OSDTextColored(ColLatency(), buf);
-            }
-        }
-
-        if (g_config.osd_show_gpu_render_time) {
-            double gpu_us = g_telemetry_gpu_work_us.load(std::memory_order_relaxed);
-            if (gpu_us <= 0.0) {
-                gpu_us = g_reflex_gpu_active_us.load(std::memory_order_relaxed);
-                if (gpu_us <= 0.0)
-                    gpu_us = g_gpu_timer.GetLatestGpuTimeUs();
-                if (gpu_us <= 0.0)
-                    gpu_us = g_measured_render_time_us.load(std::memory_order_relaxed);
-            }
-            if (gpu_us > 0.0) {
-                const char* tag = "HW";
-                if (g_reflex_gpu_active_us.load(std::memory_order_relaxed) > 0.0)
-                    tag = "Reflex";
-                else if (g_gpu_timer.IsSupported())
-                    tag = g_gpu_timer.GetSourceTag();
-
-                char buf[64];
-                snprintf(buf, sizeof(buf), TR("GPU (HW): %.1f ms [%s]", "显卡耗时 (HW): %.1f ms [%s]"),
-                         gpu_us / 1000.0, tag);
-                OSDTextColored(ColLatency(), buf);
-            }
-        }
-
-        if (g_config.osd_show_total_frame_cost) {
-            double cost_us = g_reflex_total_frame_cost_us.load(std::memory_order_relaxed);
-            if (cost_us > 0.0) {
-                char buf[32];
-                snprintf(buf, sizeof(buf), TR("Frame: %.1f ms", "整帧耗时: %.1f ms"), cost_us / 1000.0);
-                OSDTextColored(ColLatency(), buf);
-            }
-        }
-
-        // ═══════════════════════════════════
-        // QUALITY (green/yellow/red)
-        // ═══════════════════════════════════
-        PQIScores pqi = {};
-        if (g_config.osd_show_pqi || g_config.osd_show_pqi_breakdown)
-            pqi = PQI_GetRolling();
-
-        if (g_config.osd_show_pqi) {
-            ImVec4 pqi_color = PQIColor(pqi.pqi / 100.0);
-            char buf[32];
-            snprintf(buf, sizeof(buf), TR("PQI: %.0f%%", "PQI 评分: %.0f%%"), pqi.pqi);
-            OSDTextColored(pqi_color, buf);
-        }
-
-        if (g_config.osd_show_pqi && g_config.osd_show_pqi_breakdown) {
-            char buf[64];
-            snprintf(buf, sizeof(buf), TR(" Cadence: %.0f%%", " 节奏稳态: %.0f%%"), pqi.cadence * 100.0);
-            OSDTextColored(PQIColor(pqi.cadence), buf);
-            snprintf(buf, sizeof(buf), TR(" Stutter: %.0f%%", " 卡顿抑制: %.0f%%"), pqi.stutter * 100.0);
-            OSDTextColored(PQIColor(pqi.stutter), buf);
-            snprintf(buf, sizeof(buf), TR(" Deadline: %.0f%%", " 准时达成: %.0f%%"), pqi.deadline * 100.0);
-            OSDTextColored(PQIColor(pqi.deadline), buf);
-        }
-
-        if (g_config.osd_show_smoothness) {
-            double smooth = g_smoothness_us.load(std::memory_order_relaxed);
-            if (smooth > 0.0) {
-                char buf[32];
-                snprintf(buf, sizeof(buf), TR("Smoothness: %.2f ms", "平滑度: %.2f ms"), smooth / 1000.0);
-                // Color: green < 0.5ms, yellow < 1.5ms, red >= 1.5ms
-                ImVec4 col;
-                float b = g_config.osd_text_brightness;
-                if (smooth < 500.0)       col = ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f);
-                else if (smooth < 1500.0) col = ImVec4(0.9f*b, 0.9f*b, 0.2f*b, 1.0f);
-                else                      col = ImVec4(0.9f*b, 0.2f*b, 0.2f*b, 1.0f);
-                OSDTextColored(col, buf);
-            }
-        }
-
-        // ═══════════════════════════════════
-        // PIPELINE (light blue)
-        // ═══════════════════════════════════
-#ifdef _WIN64
-        int tier = static_cast<int>(g_current_tier);
-        double limiter_added_ms = g_last_gate_sleep_us.load(std::memory_order_relaxed) / 1000.0;
-        int fg_div_raw = ComputeFGDivisorRaw();
-        if (g_config.osd_show_fg && fg_div_raw > 1) {
-            char buf[48];
-            snprintf(buf, sizeof(buf), TR("FG: %dx", "插帧: %dx"), fg_div_raw);
-            OSDTextColored(ColPipeline(), buf);
-        }
-
-        if (g_config.osd_show_limiter) {
-            char buf[48];
-            snprintf(buf, sizeof(buf), TR("Limiter: +%.1f ms  T%d", "限帧延迟: +%.1f ms  T%d"), limiter_added_ms, tier);
-            OSDTextColored(ColPipeline(), buf);
-        }
-
-        if (g_config.osd_show_adaptive_smoothing && g_config.adaptive_smoothing) {
-            double offset = g_smoothing_offset_us.load(std::memory_order_relaxed);
-            double p99 = g_smoothing_p99_us.load(std::memory_order_relaxed);
-            if (g_adaptive_smoothing.IsWarm()) {
-                const char* mode = g_adaptive_smoothing.dual_mode ? TR("Dual", "双重") : TR("Med", "中位");
-                double pct = g_adaptive_smoothing.target_percentile * 100.0;
-                char buf[96];
-                snprintf(buf, sizeof(buf), TR("Adaptive: +%.0f us (P%.0f: %.1f ms) [%s]",
-                                             "自适应平滑: +%.0f us (P%.0f: %.1f ms) [%s]"),
-                         offset, pct, p99 / 1000.0, mode);
-                float b = g_config.osd_text_brightness;
-                ImVec4 col = (offset < 100.0)
-                    ? ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f)
-                    : ImVec4(0.9f*b, 0.9f*b, 0.2f*b, 1.0f);
-                OSDTextColored(col, buf);
-            }
-        }
-
-        // Bottleneck state (GPU Bound / CPU Bound)
-        if (g_config.osd_show_bottleneck) {
-            BottleneckKind bkind = g_bottleneck_kind.load(std::memory_order_relaxed);
-            const char* bstr = (bkind == BottleneckKind::GpuBound)
-                ? TR("GPU Bound", "显卡受限 (GPU)")
-                : ((bkind == BottleneckKind::CpuBound)
-                    ? TR("CPU Bound", "处理器受限 (CPU)")
-                    : TR("Balanced", "负载平衡"));
-            char buf[64];
-            snprintf(buf, sizeof(buf), TR("Bottleneck: %s", "硬件瓶颈: %s"), bstr);
-            float b = g_config.osd_text_brightness;
-            ImVec4 bcol = (bkind == BottleneckKind::GpuBound)
-                ? ImVec4(0.95f*b, 0.45f*b, 0.2f*b, 1.0f)  // Orange for GPU bound
-                : ((bkind == BottleneckKind::CpuBound)
-                    ? ImVec4(0.3f*b, 0.75f*b, 1.0f*b, 1.0f) // Cyan for CPU bound
-                    : ImVec4(0.7f*b, 0.7f*b, 0.7f*b, 1.0f)); // Grey for Balanced
-            OSDTextColored(bcol, buf);
-        }
-
-        // CPU Work (non-sleep CPU time)
-        if (g_config.osd_show_cpu_work) {
-            double cpu_us = g_telemetry_cpu_work_us.load(std::memory_order_relaxed);
-            char buf[48];
-            snprintf(buf, sizeof(buf), TR("CPU Work: %.1f ms", "CPU 真实耗时: %.1f ms"), cpu_us / 1000.0);
-            OSDTextColored(ColLatency(), buf);
-        }
-#endif // _WIN64 (Pipeline section: FG, Limiter, Adaptive Smoothing)
-
-        // ═══════════════════════════════════
-        // DISPLAY & API (light blue)
-        // ═══════════════════════════════════
-        if (g_config.osd_show_api) {
-            ActiveAPI api = SwapMgr_GetActiveAPI();
-            const char* api_name = "None";
-            if (api == ActiveAPI::DX12) api_name = "DX12";
-            else if (api == ActiveAPI::DX11) api_name = "DX11";
-            else if (api == ActiveAPI::DX9) api_name = "DX9";
-            else if (api == ActiveAPI::Vulkan) api_name = "Vulkan";
-            else if (api == ActiveAPI::OpenGL) api_name = "OpenGL";
-
-            const char* arch = (sizeof(void*) == 8) ? "64-bit" : "32-bit";
-            char buf[64];
-            snprintf(buf, sizeof(buf), TR("API: %s (%s)", "接口: %s (%s)"), api_name, arch);
-            OSDTextColored(ColPipeline(), buf);
-        }
-
-        if (g_config.osd_show_resolution) {
-            uint32_t rw = 0, rh = 0;
-            SwapMgr_GetResolution(rw, rh);
-            char buf[64];
-            if (rw > 0 && rh > 0) {
-                snprintf(buf, sizeof(buf), TR("Res: %ux%u", "分辨率: %ux%u"), rw, rh);
-            } else {
-                snprintf(buf, sizeof(buf), TR("Res: N/A", "分辨率: 未知"));
-            }
-            OSDTextColored(ColPipeline(), buf);
-        }
-
-        if (g_config.osd_show_flip_model) {
-            const char* flip_str = SwapMgr_GetPresentationModelString();
-            char buf[128];
-            snprintf(buf, sizeof(buf), TR("Flip Model: %s", "翻转模式: %s"), flip_str);
-            OSDTextColored(ColPipeline(), buf);
-        }
-
-        // ═══════════════════════════════════
-        // SYSTEM (grey — hardware sensors)
-        // ═══════════════════════════════════
-        {
-            const HWMonitorData& hw = HWMonitor_GetData();
-
-            // GPU metrics
-            if (g_config.osd_show_gpu_temp && hw.gpu_temp_c >= 0) {
-                char buf[96];
-                if (hw.gpu_temp_hotspot_c >= 0 && hw.gpu_temp_mem_c >= 0) {
-                    snprintf(buf, sizeof(buf), TR("GPU: %d C (Hot: %d C, VRAM: %d C)",
-                                                 "显卡温度: %d C (热点: %d C, 显存: %d C)"),
-                             hw.gpu_temp_c, hw.gpu_temp_hotspot_c, hw.gpu_temp_mem_c);
-                } else if (hw.gpu_temp_hotspot_c >= 0) {
-                    snprintf(buf, sizeof(buf), TR("GPU: %d C (Hot: %d C)",
-                                                 "显卡温度: %d C (热点: %d C)"),
-                             hw.gpu_temp_c, hw.gpu_temp_hotspot_c);
-                } else {
-                    snprintf(buf, sizeof(buf), TR("GPU Temp: %d C", "显卡温度: %d C"), hw.gpu_temp_c);
-                }
-                // Color: based on hottest sensor
-                int max_temp = (std::max)(hw.gpu_temp_c, hw.gpu_temp_hotspot_c);
-                ImVec4 col;
-                float b = g_config.osd_text_brightness;
-                if (max_temp < 75)       col = ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f);
-                else if (max_temp < 90)  col = ImVec4(0.9f*b, 0.9f*b, 0.2f*b, 1.0f);
-                else                     col = ImVec4(0.9f*b, 0.2f*b, 0.2f*b, 1.0f);
-                OSDTextColored(col, buf);
-            }
-
-            if (g_config.osd_show_gpu_clock && hw.gpu_clock_mhz >= 0) {
-                char buf[48];
-                if (hw.gpu_mem_clock_mhz >= 0)
-                    snprintf(buf, sizeof(buf), TR("GPU Clock: %d / %d MHz", "显卡频率: %d / %d MHz"), hw.gpu_clock_mhz, hw.gpu_mem_clock_mhz);
-                else
-                    snprintf(buf, sizeof(buf), TR("GPU Clock: %d MHz", "显卡频率: %d MHz"), hw.gpu_clock_mhz);
-                OSDTextColored(ColSystem(), buf);
-            }
-
-            if (g_config.osd_show_gpu_usage && hw.gpu_usage_pct >= 0) {
-                char buf[32];
-                snprintf(buf, sizeof(buf), TR("GPU Load: %d%%", "显卡占用: %d%%"), hw.gpu_usage_pct);
-                OSDTextColored(ColSystem(), buf);
-            }
-
-            if (g_config.osd_show_gpu_power && hw.gpu_power_w >= 0) {
-                char buf[32];
-                snprintf(buf, sizeof(buf), TR("GPU Power: %dW", "显卡功耗: %dW"), hw.gpu_power_w);
-                OSDTextColored(ColSystem(), buf);
-            }
-
-            if (g_config.osd_show_vram && hw.vram_used_mb >= 0 && hw.vram_total_mb > 0) {
-                char buf[48];
-                snprintf(buf, sizeof(buf), TR("VRAM: %lld / %lld MB", "显存占用: %lld / %lld MB"),
-                         (long long)hw.vram_used_mb, (long long)hw.vram_total_mb);
-                // Color-code by usage: green <75%, yellow 75-90%, red >90%
-                float usage = static_cast<float>(hw.vram_used_mb) / static_cast<float>(hw.vram_total_mb);
-                float b = g_config.osd_text_brightness;
-                ImVec4 col;
-                if (usage > 0.90f)
-                    col = ImVec4(1.0f*b, 0.3f*b, 0.3f*b, 1.0f);  // red
-                else if (usage > 0.75f)
-                    col = ImVec4(1.0f*b, 0.85f*b, 0.0f*b, 1.0f);  // yellow
-                else
-                    col = ImVec4(0.2f*b, 0.9f*b, 0.2f*b, 1.0f);  // green
-                OSDTextColored(col, buf);
-            }
-
-            // CPU metrics
-            if (g_config.osd_show_cpu_usage && hw.cpu_usage_pct >= 0) {
-                char buf[32];
-                snprintf(buf, sizeof(buf), TR("CPU Load: %d%%", "CPU 占用: %d%%"), hw.cpu_usage_pct);
-                OSDTextColored(ColSystem(), buf);
-            }
-
-            if (g_config.osd_show_cpu_clock && hw.cpu_clock_mhz > 0) {
-                char buf[32];
-                snprintf(buf, sizeof(buf), TR("CPU Clock: %d MHz", "CPU 频率: %d MHz"), hw.cpu_clock_mhz);
-                OSDTextColored(ColSystem(), buf);
-            }
-
-            if (g_config.osd_show_cpu_power && hw.cpu_power_w > 0) {
-                char buf[32];
-                snprintf(buf, sizeof(buf), TR("CPU Power: %d W", "CPU 功耗: %d W"), hw.cpu_power_w);
-                OSDTextColored(ColSystem(), buf);
-            }
-
-            // RAM
-            if (g_config.osd_show_ram && hw.ram_used_mb >= 0 && hw.ram_total_mb > 0) {
-                char buf[48];
-                // Show in GB for readability
-                snprintf(buf, sizeof(buf), TR("RAM: %.1f / %.1f GB", "内存占用: %.1f / %.1f GB"),
-                         hw.ram_used_mb / 1024.0, hw.ram_total_mb / 1024.0);
-                OSDTextColored(ColSystem(), buf);
-            }
-        }
-
-
-
-        // ═══════════════════════════════════
-        // STATUS (red indicators)
-        // ═══════════════════════════════════
-        if (CSV_IsEnabled())
-            OSDTextColored(ColStatus(), TR("REC", "录制中"));
-
-        if (Baseline_IsCapturing()) {
-            char buf[32];
-            snprintf(buf, sizeof(buf), TR("Baseline: %.0f%%", "基准记录: %.0f%%"), Baseline_GetProgress() * 100.0);
-            OSDTextColored(ColStatus(), buf);
-        } else if (Baseline_IsComparison()) {
-            char buf[32];
-            snprintf(buf, sizeof(buf), TR("Compare: %.0f%%", "基准对比: %.0f%%"), Baseline_GetProgress() * 100.0);
-            OSDTextColored(ColStatus(), buf);
+        // ── Layout Style Dispatcher ──
+        if (g_config.osd_style == "bar") {
+            DrawModernBarOSD(scale, ft_ms);
+        } else if (g_config.osd_style == "card") {
+            DrawModernCardOSD(scale, ft_ms);
+        } else {
+            DrawClassicOSD(scale, ft_ms);
         }
 
         // ═══════════════════════════════════
@@ -2353,18 +2860,42 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
             snprintf(bot_label, sizeof(bot_label), "%.0f", scale_min);
 
             ImVec2 cursor = ImGui::GetCursorScreenPos();
+            ImDrawList* dl = ImGui::GetWindowDrawList();
 
-            ImGui::GetWindowDrawList()->AddText(
-                {cursor.x, cursor.y}, 0xFFCCCCCC, top_label);
-            ImGui::GetWindowDrawList()->AddText(
-                {cursor.x, cursor.y + (graph_h - font_size) * 0.5f}, 0xFFCCCCCC, mid_label);
-            ImGui::GetWindowDrawList()->AddText(
-                {cursor.x, cursor.y + graph_h - font_size}, 0xFFCCCCCC, bot_label);
+            if (is_modern) {
+                // Subtle dark backdrop container for modern card look
+                dl->AddRectFilled(
+                    ImVec2(cursor.x - 2.0f, cursor.y - 2.0f),
+                    ImVec2(cursor.x + label_w + graph_w + 2.0f, cursor.y + graph_h + 2.0f),
+                    IM_COL32(10, 15, 20, 130),
+                    4.0f * scale
+                );
+            }
+
+            dl->AddText({cursor.x, cursor.y}, 0xFFCCCCCC, top_label);
+            dl->AddText({cursor.x, cursor.y + (graph_h - font_size) * 0.5f}, 0xFFCCCCCC, mid_label);
+            dl->AddText({cursor.x, cursor.y + graph_h - font_size}, 0xFFCCCCCC, bot_label);
 
             ImGui::SetCursorScreenPos({cursor.x + label_w, cursor.y});
             ImGui::PlotLines("##ft_graph", ordered, FT_HISTORY_SIZE,
                              0, nullptr, scale_min, scale_max,
                              ImVec2(graph_w, graph_h));
+
+            // Target frame time guideline
+            double user_fps = g_user_target_fps.load(std::memory_order_relaxed);
+            if (g_config.osd_show_target_line && user_fps > 0.0) {
+                float target_ft_ms = static_cast<float>(1000.0 / user_fps);
+                if (target_ft_ms >= scale_min && target_ft_ms <= scale_max && (scale_max > scale_min)) {
+                    float norm_y = 1.0f - ((target_ft_ms - scale_min) / (scale_max - scale_min));
+                    float line_y = cursor.y + norm_y * graph_h;
+                    dl->AddLine(
+                        ImVec2(cursor.x + label_w, line_y),
+                        ImVec2(cursor.x + label_w + graph_w, line_y),
+                        IM_COL32(0, 229, 255, 150),
+                        1.0f * scale
+                    );
+                }
+            }
 
             // Reserve space for the entire graph block so auto-resize includes it completely
             ImGui::SetCursorScreenPos({cursor.x, cursor.y + graph_h + 4.0f * scale});
@@ -2375,6 +2906,8 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
         ImGui::PopFont();
     }
     ImGui::End();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(3);
 }
 
 void RegisterOSD() {

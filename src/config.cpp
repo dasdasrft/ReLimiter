@@ -126,6 +126,11 @@ void ValidateConfig() {
 
     // ── Monitor Selection ──
     g_config.selected_monitor = Clamp(g_config.selected_monitor, 0, 8);
+
+    // ── OSD Style ──
+    static const char* osd_styles[] = {"card", "bar", "classic"};
+    ValidateEnum(g_config.osd_style, osd_styles, 3, "card");
+    g_config.osd_rounding = Clamp(g_config.osd_rounding, 0.0f, 24.0f);
 }
 
 bool Config_IsFirstLaunch() { return s_first_launch; }
@@ -173,6 +178,9 @@ void LoadConfig(HMODULE hModule) {
     g_config.osd_scale               = static_cast<float>(ReadINIDouble(S, "osd_scale", 1.0, P));
     g_config.osd_drop_shadow         = ReadINIBool(S, "osd_drop_shadow", true, P);
     g_config.osd_text_brightness     = static_cast<float>(ReadINIDouble(S, "osd_text_brightness", 1.0, P));
+    g_config.osd_style               = ReadINIString(S, "osd_style", "card", P);
+    g_config.osd_rounding            = static_cast<float>(ReadINIDouble(S, "osd_rounding", 8.0, P));
+    g_config.osd_show_target_line    = ReadINIBool(S, "osd_show_target_line", true, P);
     g_config.window_mode             = ReadINIString(S, "window_mode", "default", P);
     g_config.fake_fullscreen         = ReadINIBool(S, "fake_fullscreen", false, P);
     g_config.background_fps          = ReadINIInt(S, "background_fps", 30, P);
@@ -316,6 +324,9 @@ void SaveConfig() {
     WriteINIDouble(S, "osd_scale", g_config.osd_scale, P);
     WriteINIBool(S, "osd_drop_shadow", g_config.osd_drop_shadow, P);
     WriteINIDouble(S, "osd_text_brightness", g_config.osd_text_brightness, P);
+    WriteINIString(S, "osd_style", g_config.osd_style.c_str(), P);
+    WriteINIDouble(S, "osd_rounding", g_config.osd_rounding, P);
+    WriteINIBool(S, "osd_show_target_line", g_config.osd_show_target_line, P);
     WriteINIString(S, "osd_toggle_key", g_config.osd_toggle_key.c_str(), P);
 
     // ── OSD Elements ──
@@ -465,6 +476,7 @@ static void EnsureMinSlots() {
 OSDPreset OSDPreset_FromConfig() {
     OSDPreset p = {};
     p.osd_x                 = g_config.osd_x;
+    snprintf(p.osd_style, sizeof(p.osd_style), "%s", g_config.osd_style.c_str());
     p.osd_y                 = g_config.osd_y;
     p.osd_scale             = g_config.osd_scale;
     p.osd_opacity           = g_config.osd_opacity;
@@ -506,6 +518,7 @@ OSDPreset OSDPreset_FromConfig() {
 
 void OSDPreset_ApplyToConfig(const OSDPreset& p) {
     g_config.osd_x                     = p.osd_x;
+    if (p.osd_style[0] != '\0') g_config.osd_style = p.osd_style;
     g_config.osd_y                     = p.osd_y;
     g_config.osd_scale                 = p.osd_scale;
     g_config.osd_opacity               = p.osd_opacity;
@@ -613,6 +626,8 @@ static void ReadPresetFromINI(int i, const char* P) {
     snprintf(p.name, sizeof(p.name), "%s", name.c_str());
     p.occupied              = true;
     p.osd_x                 = static_cast<float>(ReadINIDouble(S, "osd_x", 0.005, P));
+    std::string style       = ReadINIString(S, "osd_style", "card", P);
+    snprintf(p.osd_style, sizeof(p.osd_style), "%s", style.c_str());
     p.osd_y                 = static_cast<float>(ReadINIDouble(S, "osd_y", 0.005, P));
     p.osd_scale             = static_cast<float>(ReadINIDouble(S, "osd_scale", 1.0, P));
     p.osd_opacity           = static_cast<float>(ReadINIDouble(S, "osd_opacity", 0.6, P));
@@ -661,6 +676,8 @@ static void ReadDefaultPresetFromINI(const char* P) {
     snprintf(s_default_preset.name, sizeof(s_default_preset.name), "%s", name.c_str());
     s_default_preset.occupied           = true;
     s_default_preset.osd_x              = static_cast<float>(ReadINIDouble(S, "osd_x", 0.005, P));
+    std::string def_style               = ReadINIString(S, "osd_style", "card", P);
+    snprintf(s_default_preset.osd_style, sizeof(s_default_preset.osd_style), "%s", def_style.c_str());
     s_default_preset.osd_y              = static_cast<float>(ReadINIDouble(S, "osd_y", 0.005, P));
     s_default_preset.osd_scale          = static_cast<float>(ReadINIDouble(S, "osd_scale", 1.0, P));
     s_default_preset.osd_opacity        = static_cast<float>(ReadINIDouble(S, "osd_opacity", 0.6, P));
@@ -752,6 +769,7 @@ void OSDPreset_SaveSlot(int slot) {
     if (!p.occupied) return;
 
     WriteINIString(S, "name", p.name, P);
+    WriteINIString(S, "osd_style", p.osd_style, P);
     WriteINIDouble(S, "osd_x", p.osd_x, P);
     WriteINIDouble(S, "osd_y", p.osd_y, P);
     WriteINIDouble(S, "osd_scale", p.osd_scale, P);
@@ -841,6 +859,7 @@ void OSDPreset_SaveDefault(const OSDPreset& p) {
     s_default_preset.occupied = true;
 
     WriteINIString(S, "name", p.name, P);
+    WriteINIString(S, "osd_style", p.osd_style, P);
     WriteINIDouble(S, "osd_x", p.osd_x, P);
     WriteINIDouble(S, "osd_y", p.osd_y, P);
     WriteINIDouble(S, "osd_scale", p.osd_scale, P);
