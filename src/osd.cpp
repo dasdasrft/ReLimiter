@@ -1637,6 +1637,14 @@ static ParsedKeybind ParseKeybind(const std::string& str) {
     return kb;
 }
 
+static inline ParsedKeybind GetCachedKeybind(const std::string& str, std::string& cached_str, ParsedKeybind& cached_kb) {
+    if (str != cached_str) {
+        cached_str = str;
+        cached_kb = ParseKeybind(str);
+    }
+    return cached_kb;
+}
+
 void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
     // ── Keybind polling (runs every frame via reshade_overlay event) ──
     // Uses GetAsyncKeyState for the main key (works regardless of UI state)
@@ -1644,7 +1652,9 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
     // repeat toggles while held.
     {
         static bool s_was_pressed = false;
-        ParsedKeybind kb = ParseKeybind(g_config.osd_toggle_key);
+        static std::string s_last_toggle_str;
+        static ParsedKeybind s_cached_toggle_kb;
+        ParsedKeybind kb = GetCachedKeybind(g_config.osd_toggle_key, s_last_toggle_str, s_cached_toggle_kb);
         if (kb.vk != 0) {
             bool key_down = (GetAsyncKeyState(kb.vk) & 0x8000) != 0;
 
@@ -1687,9 +1697,12 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
         for (int i = 0; i < OSDPreset_GetCount(); i++)
             if (OSDPreset_GetSlot(i).occupied) total_presets++;
 
-        auto PollPresetKey = [](const std::string& key_str, bool& was_pressed) -> bool {
+        static std::string s_last_prev_str, s_last_next_str;
+        static ParsedKeybind s_cached_prev_kb, s_cached_next_kb;
+
+        auto PollPresetKey = [](const std::string& key_str, std::string& cached_str, ParsedKeybind& cached_kb, bool& was_pressed) -> bool {
             if (key_str.empty()) return false;
-            ParsedKeybind kb = ParseKeybind(key_str);
+            ParsedKeybind kb = GetCachedKeybind(key_str, cached_str, cached_kb);
             if (kb.vk == 0) return false;
 
             bool key_down = (GetAsyncKeyState(kb.vk) & 0x8000) != 0;
@@ -1752,12 +1765,12 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
         };
 
         if (total_presets > 0) {
-            if (PollPresetKey(g_config.osd_preset_prev_key, s_prev_pressed)) {
+            if (PollPresetKey(g_config.osd_preset_prev_key, s_last_prev_str, s_cached_prev_kb, s_prev_pressed)) {
                 s_active_preset = (s_active_preset <= 0) ? total_presets - 1 : s_active_preset - 1;
                 LOG_INFO("OSD: Preset cycle prev -> %d/%d", s_active_preset, total_presets);
                 ApplyCyclePreset(s_active_preset);
             }
-            if (PollPresetKey(g_config.osd_preset_next_key, s_next_pressed)) {
+            if (PollPresetKey(g_config.osd_preset_next_key, s_last_next_str, s_cached_next_kb, s_next_pressed)) {
                 s_active_preset = (s_active_preset >= total_presets - 1) ? 0 : s_active_preset + 1;
                 LOG_INFO("OSD: Preset cycle next -> %d/%d", s_active_preset, total_presets);
                 ApplyCyclePreset(s_active_preset);
@@ -1768,8 +1781,10 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
     // ── Position cycle keybind polling ──
     {
         static bool s_pos_pressed = false;
+        static std::string s_last_pos_str;
+        static ParsedKeybind s_cached_pos_kb;
         if (!g_config.osd_position_cycle_key.empty()) {
-            ParsedKeybind kb = ParseKeybind(g_config.osd_position_cycle_key);
+            ParsedKeybind kb = GetCachedKeybind(g_config.osd_position_cycle_key, s_last_pos_str, s_cached_pos_kb);
             if (kb.vk != 0) {
                 bool key_down = (GetAsyncKeyState(kb.vk) & 0x8000) != 0;
                 bool ctrl_held  = (GetAsyncKeyState(VK_LCONTROL) & 0x8000) || (GetAsyncKeyState(VK_RCONTROL) & 0x8000);
@@ -1798,8 +1813,10 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
     // ── Blackout keybind polling ──
     {
         static bool s_blackout_pressed = false;
+        static std::string s_last_blackout_str;
+        static ParsedKeybind s_cached_blackout_kb;
         if (!g_config.blackout_key.empty()) {
-            ParsedKeybind kb = ParseKeybind(g_config.blackout_key);
+            ParsedKeybind kb = GetCachedKeybind(g_config.blackout_key, s_last_blackout_str, s_cached_blackout_kb);
             if (kb.vk != 0) {
                 bool key_down = (GetAsyncKeyState(kb.vk) & 0x8000) != 0;
                 bool ctrl_held  = (GetAsyncKeyState(VK_LCONTROL) & 0x8000) || (GetAsyncKeyState(VK_RCONTROL) & 0x8000);
@@ -1825,8 +1842,10 @@ void DrawOSD(reshade::api::effect_runtime* /*rt*/) {
     // ── OLED Care keybind polling ──
     {
         static bool s_oled_care_pressed = false;
+        static std::string s_last_oled_str;
+        static ParsedKeybind s_cached_oled_kb;
         if (!g_config.oled_care_key.empty()) {
-            ParsedKeybind kb = ParseKeybind(g_config.oled_care_key);
+            ParsedKeybind kb = GetCachedKeybind(g_config.oled_care_key, s_last_oled_str, s_cached_oled_kb);
             if (kb.vk != 0) {
                 bool key_down = (GetAsyncKeyState(kb.vk) & 0x8000) != 0;
                 bool ctrl_held  = (GetAsyncKeyState(VK_LCONTROL) & 0x8000) || (GetAsyncKeyState(VK_RCONTROL) & 0x8000);

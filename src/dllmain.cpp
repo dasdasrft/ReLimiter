@@ -153,7 +153,10 @@ static void on_init_swapchain(reshade::api::swapchain* sc, bool resize) {
         }
     }
 }
+static reshade::api::swapchain* s_last_presenting_sc = nullptr;
+
 static void on_destroy_swapchain(reshade::api::swapchain* sc, bool resize) {
+    s_last_presenting_sc = nullptr;
     SwapMgr_OnDestroySwapchain(sc, resize);
 }
 
@@ -292,7 +295,10 @@ static void on_present(reshade::api::command_queue* queue,
     // Re-capture when: pointer changes, or the detected API changes since
     // last capture (handles DX11 launcher → DX12 gameplay transition where
     // Streamline reuses the same proxy pointer for both).
-    if (sc) {
+    // Performance optimization: eliminate per-frame sc->get_device() and
+    // get_api() virtual dispatches when the swapchain pointer is unchanged.
+    if (sc && sc != s_last_presenting_sc) {
+        s_last_presenting_sc = sc;
         // Derive API from the swapchain's own device rather than the cached
         // global state. SwapMgr_GetActiveAPI() can be stale during API
         // transitions (e.g. DX12 launcher → Vulkan gameplay) because

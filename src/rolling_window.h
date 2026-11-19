@@ -78,24 +78,15 @@ public:
         return std::sqrt(sum_sq / static_cast<double>(count_));
     }
 
-    // Percentile via insertion-sort shadow copy
+    // Percentile via std::nth_element (O(N) linear time selection, zero heap allocation)
     double Percentile(double p) const {
         if (count_ == 0) return 0.0;
         double sorted[N];
         for (size_t i = 0; i < count_; i++)
             sorted[i] = ValueOf(data_[Index(i)]);
-        // insertion sort
-        for (size_t i = 1; i < count_; i++) {
-            double key = sorted[i];
-            size_t j = i;
-            while (j > 0 && sorted[j - 1] > key) {
-                sorted[j] = sorted[j - 1];
-                j--;
-            }
-            sorted[j] = key;
-        }
         size_t idx = static_cast<size_t>(p * static_cast<double>(count_ - 1));
         if (idx >= count_) idx = count_ - 1;
+        std::nth_element(sorted, sorted + idx, sorted + count_);
         return sorted[idx];
     }
 

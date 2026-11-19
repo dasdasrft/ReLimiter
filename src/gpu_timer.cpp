@@ -93,7 +93,8 @@ void GpuTimer::OnDestroyDevice(reshade::api::device* device) {
 }
 
 void GpuTimer::OnCommandListExecute(reshade::api::command_queue* queue, reshade::api::command_list* cmd_list) {
-    if (!supported_.load(std::memory_order_relaxed) || !query_heap_.handle || !queue)
+    // Fast path: if frame already started or timer not supported/active, return immediately with zero virtual calls
+    if (frame_started_ || !supported_.load(std::memory_order_relaxed) || !query_heap_.handle || !queue)
         return;
 
     // Fetch frequency on first queue interaction if not known

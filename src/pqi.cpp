@@ -113,10 +113,18 @@ void PQI_Push(double frame_time_us, double target_interval_us,
     st.prev_frame_time = frame_time_us;
 }
 
+static PQIScores s_cached_rolling = {100.0, 1.0, 1.0, 1.0};
+static int s_rolling_counter = 0;
+
 PQIScores PQI_GetRolling() {
-    return ComputeFromWindow(s_state.frame_times, s_state.targets,
-                             s_state.wake_errors, s_state.wake_guards,
-                             s_state.count, ROLLING_SIZE, s_state.head);
+    // Recompute every 15 frames (~5-10Hz) to eliminate per-frame std::sort overhead on 300 elements
+    if (++s_rolling_counter >= 15 || s_cached_rolling.pqi == 100.0) {
+        s_rolling_counter = 0;
+        s_cached_rolling = ComputeFromWindow(s_state.frame_times, s_state.targets,
+                                             s_state.wake_errors, s_state.wake_guards,
+                                             s_state.count, ROLLING_SIZE, s_state.head);
+    }
+    return s_cached_rolling;
 }
 
 PQIScores PQI_GetSession() {
@@ -142,4 +150,6 @@ PQIScores PQI_GetSession() {
 
 void PQI_Reset() {
     memset(&s_state, 0, sizeof(s_state));
+    s_cached_rolling = {100.0, 1.0, 1.0, 1.0};
+    s_rolling_counter = 0;
 }

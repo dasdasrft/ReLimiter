@@ -424,11 +424,25 @@ uint32_t SwapMgr_GetPresentFlags() {
 }
 
 const char* SwapMgr_GetPresentationModelString() {
-    static char s_buf[128];
+    static char s_buf[128] = "Unknown";
+    static ActiveAPI s_last_api = ActiveAPI::None;
+    static uint32_t  s_last_mode = 0xFFFFFFFF;
+    static uint32_t  s_last_flags = 0xFFFFFFFF;
+    static bool      s_last_upgraded = false;
+
     ActiveAPI api = s_active_api.load(std::memory_order_relaxed);
     uint32_t mode = s_present_mode.load(std::memory_order_relaxed);
     uint32_t flags = s_present_flags.load(std::memory_order_relaxed);
     bool has_mode = s_has_present_mode.load(std::memory_order_relaxed);
+    bool upgraded = FlipModel_WasApplied();
+
+    if (api == s_last_api && mode == s_last_mode && flags == s_last_flags && upgraded == s_last_upgraded) {
+        return s_buf;
+    }
+    s_last_api = api;
+    s_last_mode = mode;
+    s_last_flags = flags;
+    s_last_upgraded = upgraded;
 
     const char* base_mode = "Unknown";
     if (api == ActiveAPI::DX11 || api == ActiveAPI::DX12) {
@@ -449,7 +463,6 @@ const char* SwapMgr_GetPresentationModelString() {
                 base_mode = (api == ActiveAPI::DX12) ? "FLIP_DISCARD" : "DXGI";
                 break;
         }
-        bool upgraded = FlipModel_WasApplied();
         bool tearing = (flags & 2048 /* DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING */) != 0;
         if (upgraded && tearing) {
             snprintf(s_buf, sizeof(s_buf), "%s [Upgraded, VRR]", base_mode);
